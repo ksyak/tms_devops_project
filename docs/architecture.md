@@ -91,15 +91,21 @@ StorageClass `standard-rwo`, том 8 ГиБ. В upstream это Deployment с
 
 kube-prometheus-stack, развёрнут через Argo CD.
 
-Метрики ошибок и задержки снимаются с NGINX Ingress: приложение не отдаёт
-`/metrics`, в сервисы встроен OpenTelemetry. Состояние подов берётся из
-kube-state-metrics.
+Источники метрик выбраны по факту наличия. Приложение не отдаёт
+`/metrics`: в сервисы встроен OpenTelemetry. NGINX Ingress версии 1.15
+больше не собирает подробные метрики запросов — остался только процессный
+счётчик без разбивки по кодам ответа и без гистограммы задержек.
+
+Поэтому доступность и время ответа снимаются пробами blackbox exporter:
+он обращается к витрине через Ingress Controller, тем же путём, что и
+пользователь. Состояние подов берётся из kube-state-metrics, нагрузка —
+из процессного счётчика Ingress.
 
 Компоненты `kubeControllerManager`, `kubeScheduler`, `kubeEtcd`, `kubeProxy`
 выключены — в GKE control plane управляется провайдером и метрики с него
 недоступны.
 
-Алерты: `BoutiquePodNotReady`, `BoutiqueHighErrorRate`,
+Алерты: `BoutiquePodNotReady`, `BoutiqueFrontendDown`,
 `BoutiqueHighLatency`.
 
 ## Структура репозитория
@@ -111,7 +117,8 @@ kube-state-metrics.
 ├── deploy/
 │   ├── helm/onlineboutique/        чарт приложения
 │   ├── argocd/                     Application
-│   └── monitoring/rules/           PrometheusRule
+│   └── monitoring/                 PrometheusRule, Probe, дашборд,
+│                                   конфигурация Alertmanager
 ├── scripts/
 │   ├── bootstrap.sh                развёртывание
 │   └── teardown.sh                 удаление

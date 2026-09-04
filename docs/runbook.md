@@ -123,8 +123,27 @@ kubectl -n monitoring get alertmanager monitoring-kube-prometheus-alertmanager \
 | Алерт | Условие | Первые действия |
 |---|---|---|
 | `BoutiquePodNotReady` | Под не в Ready более 5 минут | `kubectl -n boutique describe pod <под>`, затем логи |
-| `BoutiqueHighErrorRate` | Более 5% ответов 5xx за 5 минут | `kubectl get pods -n boutique`, искать упавший бэкенд |
-| `BoutiqueHighLatency` | p95 выше 1 секунды | Проверить нагрузку и ресурсы подов |
+| `BoutiqueFrontendDown` | Проба витрины не возвращает 200 более 2 минут | `kubectl get pods -n boutique`, искать упавший бэкенд |
+| `BoutiqueHighLatency` | Время ответа пробы выше 1 секунды | Проверить нагрузку и ресурсы подов |
+
+### Масштабирование не откатывается автоматически
+
+В шаблонах чарта не задано поле `replicas`, поэтому Argo CD им не
+управляет и `kubectl scale` не считается расхождением. После ручного
+масштабирования вернуть количество реплик нужно тоже вручную.
+
+## Сценарий проверки алертов
+
+```bash
+# отключить автосинхронизацию, чтобы Argo не мешал
+kubectl -n argocd patch app boutique --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+
+kubectl -n boutique scale deploy productcatalogservice --replicas=0
+# витрина отдаёт 500, через 2 минуты срабатывает BoutiqueFrontendDown
+
+kubectl -n boutique scale deploy productcatalogservice --replicas=1
+kubectl -n argocd patch app boutique --type merge   -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+```
 
 ## Проверка персистентности
 
