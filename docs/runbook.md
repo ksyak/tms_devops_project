@@ -7,13 +7,33 @@ gcloud container clusters get-credentials boutique \
   --zone europe-central2-a --project <проект>
 ```
 
-| Что | Как |
-|---|---|
-| Витрина | `kubectl get svc ingress-nginx-controller -n ingress-nginx` → внешний IP |
-| Argo CD | `kubectl port-forward svc/argocd-server -n argocd 8080:443` |
-| Grafana | `kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80`, `admin` / `prom-operator` |
-| Prometheus | `kubectl port-forward svc/monitoring-kube-prometheus-prometheus -n monitoring 9090:9090` |
-| Alertmanager | `kubectl port-forward svc/monitoring-kube-prometheus-alertmanager -n monitoring 9093:9093` |
+Витрина и мониторинг опубликованы через Ingress с сертификатами
+Let's Encrypt. Имена построены на nip.io, который резолвит
+`<что-угодно>.<адрес>.nip.io` в сам адрес.
+
+| Что | Адрес | Доступ |
+|---|---|---|
+| Витрина | `https://<адрес>.nip.io` | открыто |
+| Grafana | `https://grafana.<адрес>.nip.io` | форма входа Grafana |
+| Prometheus | `https://prometheus.<адрес>.nip.io` | basic auth |
+| Alertmanager | `https://alertmanager.<адрес>.nip.io` | basic auth |
+| Argo CD | `kubectl port-forward svc/argocd-server -n argocd 8080:443` | наружу не публикуется |
+
+Учётные данные хранятся в SealedSecret: `grafana-admin` и
+`monitoring-basic-auth` в namespace `monitoring`.
+
+**Адрес зашит в имена хостов.** После полного пересоздания стенда
+балансировщик получает новый IP, и имена в `values-prod.yaml` и в values
+приложения `monitoring` нужно обновить, иначе Ingress перестанет
+совпадать с DNS.
+
+Доступ без публикации, если Ingress недоступен:
+
+```bash
+kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
+kubectl port-forward svc/monitoring-kube-prometheus-prometheus -n monitoring 9090:9090
+kubectl port-forward svc/monitoring-kube-prometheus-alertmanager -n monitoring 9093:9093
+```
 
 Пароль Argo CD:
 

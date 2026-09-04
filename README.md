@@ -98,9 +98,23 @@ git revert <коммит> && git push
 
 ## Доступ к интерфейсам
 
+Витрина и мониторинг опубликованы через Ingress с сертификатами
+Let's Encrypt:
+
+| Что | Адрес |
+|---|---|
+| Витрина | `https://<адрес>.nip.io` |
+| Grafana | `https://grafana.<адрес>.nip.io` |
+| Prometheus | `https://prometheus.<адрес>.nip.io` |
+| Alertmanager | `https://alertmanager.<адрес>.nip.io` |
+
+Prometheus и Alertmanager не имеют собственной аутентификации, поэтому
+закрыты basic auth на уровне Ingress. Пароли хранятся в SealedSecret.
+
+Argo CD наружу не публикуется:
+
 ```bash
 kubectl port-forward svc/argocd-server -n argocd 8080:443
-kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
 ```
 
 Пароль Argo CD:
