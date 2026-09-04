@@ -1,0 +1,31 @@
+# ClusterIssuer вынесен в отдельное приложение: он зависит от CRD, которые
+# приносит cert-manager, и синхронизируется после него.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-issuer
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/ksyak/tms_devops_project.git
+    targetRevision: main
+    path: deploy/certs
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m

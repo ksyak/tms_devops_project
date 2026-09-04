@@ -29,12 +29,18 @@ googleCloudOperations:
 ingress:
   create: true
   className: nginx
+  # nip.io резолвит <адрес>.nip.io в сам адрес. Домена у стенда нет, а
+  # Let's Encrypt требует имя: сертификат на IP не выдаётся.
+  host: "34.118.124.170.nip.io"
+  tls:
+    enabled: true
+    issuer: letsencrypt
+    secretName: frontend-tls
 frontend:
   # Снаружи стоит NGINX Ingress, второй балансировщик не нужен.
   externalService: false
-# Источник синтетической нагрузки. Направлен через Ingress Controller:
-# иначе запросы идут в Service напрямую, метрики Ingress пусты и алерты
-# по доле ошибок и задержке не на чем срабатывать.
+# Источник синтетической нагрузки. Направлен через Ingress Controller,
+# чтобы трафик шёл тем же путём, что у пользователя.
 loadGenerator:
   create: true
   frontendAddr: "ingress-nginx-controller.ingress-nginx.svc.cluster.local:80"

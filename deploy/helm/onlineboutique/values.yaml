@@ -42,6 +42,10 @@ ingress:
   annotations: {}
   # Namespace контроллера, используется в NetworkPolicy.
   controllerNamespace: ingress-nginx
+  tls:
+    enabled: false
+    issuer: letsencrypt
+    secretName: frontend-tls
 
 sidecars:
   # Specifies if the Sidecars are created or not. If true, one fine granular Sidecar per app is created.

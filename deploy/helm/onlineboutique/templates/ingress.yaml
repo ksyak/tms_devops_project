@@ -1,4 +1,5 @@
 {{- if and .Values.ingress .Values.ingress.create }}
+{{- $tls := and .Values.ingress.tls .Values.ingress.tls.enabled .Values.ingress.host }}
 # Точка входа снаружи вместо Service типа LoadBalancer.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -7,17 +8,38 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     app: {{ .Values.frontend.name }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    {{- if $tls }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.issuer | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- if $tls }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
   rules:
-    - {{- if .Values.ingress.host }}
-      host: {{ .Values.ingress.host | quote }}
-      {{- end }}
+    {{- if .Values.ingress.host }}
+    # Правило с именем нужно и для сертификата, и для проверки HTTP-01.
+    - host: {{ .Values.ingress.host | quote }}
       http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.frontend.name }}
+                port:
+                  number: 80
+    {{- end }}
+    # Правило без имени оставлено намеренно: по нему витрина доступна по
+    # адресу балансировщика, и на него же опирается проба blackbox.
+    - http:
         paths:
           - path: /
             pathType: Prefix
