@@ -74,13 +74,27 @@ Helm chart в OCI-репозиторий. Результат приходит в
 ## Откат
 
 ```bash
-argocd app rollback boutique <номер ревизии>   # быстрый откат
-git revert <коммит> && git push                # приведение Git в соответствие
+argocd app set boutique --sync-policy none      # иначе откат отклоняется
+argocd app history boutique
+argocd app rollback boutique <номер ревизии>
 ```
 
-После `argocd app rollback` автосинхронизация отключается, и состояние
-кластера расходится с Git. Возвращать соответствие следует через `git
-revert`.
+Argo CD не выполняет откат при включённой автосинхронизации: она сразу
+вернула бы состояние из Git. После отката приложение остаётся `OutOfSync`
+— кластер на старой версии, Git на новой.
+
+Вернуть соответствие можно двумя способами. Включить автосинхронизацию
+обратно, и тогда кластер догонит Git:
+
+```bash
+argocd app set boutique --sync-policy automated --auto-prune --self-heal
+```
+
+Либо откатить сам Git, если проблема в выкаченной версии:
+
+```bash
+git revert <коммит> && git push
+```
 
 ## Доступ к интерфейсам
 

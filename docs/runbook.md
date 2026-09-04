@@ -70,8 +70,8 @@ kubectl -n argocd patch app boutique --type merge \
 kubectl -n argocd describe app boutique | tail -30
 ```
 
-После `argocd app rollback` автосинхронизация отключается намеренно.
-Включить обратно:
+Автосинхронизацию отключают вручную перед откатом: с включённой Argo CD
+отклоняет команду. Включить обратно:
 
 ```bash
 argocd app set boutique --sync-policy automated --auto-prune --self-heal
@@ -157,12 +157,25 @@ kubectl -n boutique get pvc     # том тот же
 
 ## Откат версии
 
+CLI работает по kubeconfig, без входа на сервер. Команды выполняются из
+namespace `argocd`:
+
 ```bash
-argocd app history boutique
-argocd app rollback boutique <номер>
+kubectl config set-context --current --namespace=argocd
+
+argocd app set boutique --sync-policy none --core
+argocd app history boutique --core
+argocd app rollback boutique <номер> --core
 ```
 
-Затем привести Git в соответствие:
+После отката приложение остаётся `OutOfSync`. Вернуть кластер к текущему
+состоянию Git:
+
+```bash
+argocd app set boutique --sync-policy automated --auto-prune --self-heal --core
+```
+
+Если откатывать нужно саму версию, а не только кластер:
 
 ```bash
 git revert <коммит> && git push
