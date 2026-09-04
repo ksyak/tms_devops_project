@@ -1,5 +1,4 @@
-# Отдельный service account для нод вместо дефолтного Compute SA:
-# у дефолтного роль Editor на весь проект, а проект у нас общий.
+# Дефолтный Compute SA имеет Editor на весь проект — используем свой.
 resource "google_service_account" "nodes" {
   account_id   = "${var.cluster_name}-nodes"
   display_name = "GKE nodes: ${var.cluster_name}"
@@ -26,12 +25,11 @@ resource "google_container_cluster" "this" {
   network    = var.network_id
   subnetwork = var.subnet_id
 
-  # Пул создаём отдельным ресурсом: у дефолтного нельзя менять node_config
-  # без пересоздания кластера.
+  # node_config дефолтного пула нельзя менять без пересоздания кластера.
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  # Без этого terraform destroy падает, и teardown ломается на ровном месте.
+  # Провайдер по умолчанию ставит true, и destroy падает.
   deletion_protection = false
 
   networking_mode = "VPC_NATIVE"
@@ -41,11 +39,11 @@ resource "google_container_cluster" "this" {
     services_secondary_range_name = var.services_range_name
   }
 
-  # Dataplane V2 даёт NetworkPolicy из коробки (бонус ТЗ) и заодно
-  # исключает конфликт с legacy-блоком network_policy.
+  # Dataplane V2: NetworkPolicy без Calico. С legacy-блоком network_policy
+  # несовместим, поэтому он не задан.
   datapath_provider = "ADVANCED_DATAPATH"
 
-  # Workload Identity: поды ходят в API GCP без ключей в секретах.
+  # Workload Identity для подов.
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }

@@ -8,7 +8,6 @@ terraform {
     }
   }
 
-  # Бакет намеренно не зашит: приходит через -backend-config из bootstrap.sh.
-  # Так один и тот же код применим в любом проекте.
+  # Бакет передаётся через -backend-config.
   backend "gcs" {}
 }

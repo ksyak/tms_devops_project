@@ -1,23 +1,21 @@
 name: CI
 
-# Требование ТЗ: lint -> сборка -> автотесты -> публикация артефактов
-# на ЛЮБОЙ ветке. Деплоя здесь нет и быть не должно: в кластер пишет
-# только Argo CD.
+# Lint, тесты, сборка и публикация образов и чарта. Деплоя нет:
+# в кластер пишет только Argo CD.
 on:
   push:
     branches: ['**']
   pull_request:
     branches: [main]
 
-# Экономит минуты: новый пуш в ту же ветку отменяет предыдущий прогон.
+# Новый пуш в ту же ветку отменяет предыдущий прогон.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  # Нужно для Workload Identity Federation: экшен обменивает OIDC-токен
-  # GitHub на токен GCP. Ключей сервисного аккаунта в секретах нет.
+  # Workload Identity Federation: обмен OIDC-токена на токен GCP.
   id-token: write
 
 env:
@@ -54,7 +52,7 @@ jobs:
       - name: Terraform
         run: |
           terraform -chdir=infra/terraform fmt -recursive -check
-          # -backend=false: валидация не должна лезть в GCS за состоянием.
+          # Без обращения к состоянию в GCS.
           terraform -chdir=infra/terraform init -backend=false -input=false
           terraform -chdir=infra/terraform validate
 
@@ -72,7 +70,7 @@ jobs:
       - name: go test
         run: |
           set -e
-          # Только те сервисы, где в upstream действительно есть тесты.
+          # Сервисы, у которых есть тесты.
           for s in checkoutservice frontend productcatalogservice shippingservice; do
             echo "::group::$s"
             (cd "src/$s" && go test ./...)
@@ -91,8 +89,7 @@ jobs:
     needs: [lint, test]
     runs-on: ubuntu-latest
     strategy:
-      # Один упавший сервис не должен отменять сборку остальных —
-      # иначе непонятно, сломан один или все.
+      # Упавший сервис не отменяет сборку остальных.
       fail-fast: false
       matrix:
         include:
@@ -107,8 +104,7 @@ jobs:
           - { service: productcatalogservice, context: src/productcatalogservice }
           - { service: recommendationservice, context: src/recommendationservice }
           - { service: shippingservice,       context: src/shippingservice }
-          # shoppingassistantservice намеренно не собирается: он не входит
-          # ни в чарт, ни в манифесты, и требует ключа Gemini.
+          # shoppingassistantservice не собирается: нет в чарте и манифестах.
     steps:
       - uses: actions/checkout@v4
 
@@ -129,7 +125,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          # Тег — git sha. :latest в проде запрещён требованиями ТЗ.
+          # Тег — git sha, без :latest.
           tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
@@ -154,7 +150,7 @@ jobs:
           gcloud auth print-access-token \
             | helm registry login -u oauth2accesstoken --password-stdin ${{ env.REGISTRY }}
 
-      # Второй артефакт CI по требованию трека: не только образ, но и чарт.
+      # Второй артефакт помимо образов.
       - name: Упаковать и запушить
         run: |
           helm package deploy/helm/onlineboutique --version "0.10.6+${GITHUB_SHA::7}"
@@ -170,7 +166,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # needs.*.result даёт success/failure/cancelled/skipped по каждой job.
+
           RESULT: ${{ contains(needs.*.result, 'failure') && 'ПРОВАЛ' || 'успех' }}
         run: |
           text="CI ${RESULT}

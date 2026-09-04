@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 #
-# Полностью сносит дипломный стенд:
+# Сносит стенд:
 #   PROJECT_ID=<проект> ./scripts/teardown.sh
 #
-# Порядок здесь важен и не случаен. LoadBalancer'ы и PersistentVolume'ы
-# создаёт контроллер Kubernetes, а не Terraform — в стейте их нет. Если сразу
-# сделать terraform destroy, кластер исчезнет вместе с контроллерами, а
-# forwarding rules, целевые пулы, внешние адреса и диски останутся в проекте
-# осиротевшими и продолжат тарифицироваться. Поэтому сначала снимаем то, что
-# создал Kubernetes, и только потом рушим инфраструктуру.
+# LoadBalancer'ы и PersistentVolume'ы создаёт Kubernetes, в стейте Terraform
+# их нет. При destroy в первую очередь кластер исчезает вместе с
+# контроллерами, а forwarding rules, адреса и диски остаются и
+# тарифицируются. Поэтому сначала снимается то, что создал Kubernetes.
 #
-# ВАЖНО: проект общий с другими задачами, поэтому удаляем адресно.
-# Никакого `gcloud projects delete` — снесли бы чужое.
+# Проект общий с другими задачами, ресурсы удаляются адресно.
 
 set -euo pipefail
 
@@ -42,12 +39,11 @@ if gcloud container clusters describe "${CLUSTER_NAME}" \
   gcloud container clusters get-credentials "${CLUSTER_NAME}" \
     --zone "${ZONE}" --project "${PROJECT_ID}"
 
-  # Сначала Argo CD: иначе он бодро пересоздаст всё, что мы удалим.
-  log "Отключаю Argo CD, чтобы не пересоздавал удаляемое"
+  log "Отключаю Argo CD"
   kubectl delete applications.argoproj.io --all -n argocd --ignore-not-found --timeout=5m || true
   helm uninstall argocd -n argocd 2>/dev/null || true
 
-  log "Удаляю Service типа LoadBalancer (за ними стоят forwarding rules и IP)"
+  log "Удаляю Service типа LoadBalancer"
   kubectl get svc --all-namespaces \
     -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
     | while read -r ns name; do
@@ -56,11 +52,10 @@ if gcloud container clusters describe "${CLUSTER_NAME}" \
         kubectl delete svc "${name}" -n "${ns}" --ignore-not-found --timeout=3m || true
       done
 
-  log "Удаляю PersistentVolumeClaim (за ними стоят диски)"
+  log "Удаляю PersistentVolumeClaim"
   kubectl delete pvc --all --all-namespaces --ignore-not-found --timeout=5m || true
 
-  # Контроллеру нужно время, чтобы освободить облачные ресурсы.
-  log "Жду, пока GCP освободит LB и диски"
+  log "Жду освобождения LB и дисков"
   sleep 45
 else
   warn "кластер ${CLUSTER_NAME} не найден — пропускаю очистку внутри Kubernetes"
@@ -87,13 +82,13 @@ else
 fi
 
 # --- 3. Бакет состояния -----------------------------------------------------
-# Удаляется последним: до этого момента он нужен самому destroy.
+# Последним: до этого он нужен самому destroy.
 
 log "Бакет состояния gs://${STATE_BUCKET}"
 gcloud storage rm -r "gs://${STATE_BUCKET}" 2>/dev/null || warn "бакет уже отсутствует"
 
 # --- 4. Контроль ------------------------------------------------------------
-# Вывод этого блока идёт в отчёт как teardown log.
+
 
 log "Контрольная проверка — списки должны быть пусты"
 
@@ -112,10 +107,8 @@ cat <<EOF
 
   Teardown завершён.
 
-  Если в списках выше что-то осталось — это осиротевшие ресурсы,
-  удалите их вручную и разберитесь, почему контроллер не убрал их сам.
-
-  Напоминание: проект ${PROJECT_ID} используется и под другие задачи,
-  поэтому часть ресурсов в консоли может принадлежать не диплому.
+  Непустые списки выше означают осиротевшие ресурсы — удалить вручную.
+  Проект ${PROJECT_ID} используется и под другие задачи, часть ресурсов
+  в консоли может относиться к ним.
 
 EOF

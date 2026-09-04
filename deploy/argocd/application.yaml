@@ -1,13 +1,11 @@
-# Корневое приложение. С момента, когда оно зарегистрировано, состояние
-# кластера приводит к описанному в Git только Argo CD — ни bootstrap.sh,
-# ни CI больше в кластер не пишут. Это и есть GitOps.
+# Приложение Online Boutique.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: boutique
   namespace: argocd
   finalizers:
-    # Без финализатора удаление Application осиротит ресурсы в кластере.
+    # Без финализатора удаление Application осиротит ресурсы.
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
@@ -27,10 +25,7 @@ spec:
 
   syncPolicy:
     automated:
-      # prune убирает из кластера то, что удалили из Git.
       prune: true
-      # selfHeal возвращает состояние, если кто-то поправил кластер руками.
-      # На демо это показывает, что kubectl edit бесполезен — Git главнее.
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

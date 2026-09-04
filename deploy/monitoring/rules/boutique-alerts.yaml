@@ -1,10 +1,7 @@
-# Алерты по приложению. ТЗ требует минимум два, здесь три:
-# доступность подов, доля ошибок и задержка.
+# Доступность подов, доля ошибок, задержка.
 #
-# Метрики ошибок и задержки снимаются с NGINX Ingress, а не с самого
-# приложения: Online Boutique не отдаёт /metrics — в нём зашит
-# OpenTelemetry, а не Prometheus-экспортер. Ingress видит все запросы
-# к витрине, поэтому даёт и RPS, и коды ответов, и время ответа.
+# Ошибки и задержка берутся с NGINX Ingress: приложение не отдаёт /metrics,
+# в нём OpenTelemetry, а не Prometheus-экспортер.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -31,8 +28,7 @@ spec:
     - name: boutique.errors
       rules:
         - alert: BoutiqueHighErrorRate
-          # Доля пятисоток от всех запросов через Ingress.
-          # При нулевом трафике получается 0/0 = NaN, и алерт не срабатывает.
+          # При нулевом трафике 0/0 = NaN, алерт не срабатывает.
           expr: |
             sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
               /

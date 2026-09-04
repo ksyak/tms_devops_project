@@ -1,5 +1,4 @@
-# Мониторинг ставится тоже через Argo CD, а не helm-командой из bootstrap.sh.
-# Требование ТЗ: kube-prometheus-stack развёрнут через Argo CD.
+# kube-prometheus-stack.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -13,20 +12,18 @@ spec:
   source:
     repoURL: https://prometheus-community.github.io/helm-charts
     chart: kube-prometheus-stack
-    # Версия прибита: без этого «одна команда» перестаёт быть воспроизводимой.
+    # Версия зафиксирована для воспроизводимости.
     targetRevision: 89.2.0
     helm:
       releaseName: monitoring
       values: |
         prometheus:
           prometheusSpec:
-            # Без этих трёх флагов Prometheus подхватывает только те
-            # ServiceMonitor/PrometheusRule, что созданы этим же релизом,
-            # и наши правила из deploy/monitoring/rules молча игнорируются.
+            # Иначе подхватываются только объекты этого же релиза.
             serviceMonitorSelectorNilUsesHelmValues: false
             podMonitorSelectorNilUsesHelmValues: false
             ruleSelectorNilUsesHelmValues: false
-            # Кластер из трёх e2-standard-2, длинная история не нужна.
+            # Короткая история: кластер из трёх e2-standard-2.
             retention: 2d
             resources:
               requests:
@@ -45,8 +42,7 @@ spec:
                 memory: 128Mi
 
         grafana:
-          # Пароль по умолчанию prom-operator. Для учебного стенда за
-          # port-forward этого достаточно, наружу Grafana не публикуется.
+          # Пароль по умолчанию prom-operator, наружу не публикуется.
           defaultDashboardsTimezone: browser
           resources:
             requests:
@@ -57,13 +53,11 @@ spec:
           sidecar:
             dashboards:
               enabled: true
-              # Подхватывает наши дашборды из ConfigMap с этой меткой.
+              # Дашборды из ConfigMap с этой меткой.
               label: grafana_dashboard
               searchNamespace: ALL
 
-        # Эти компоненты в managed-кластере недоступны: control plane
-        # принадлежит Google, метрики с него не снять. Без выключения
-        # получаем вечно красные targets и шумные алерты.
+        # Control plane в GKE управляется провайдером, метрики недоступны.
         kubeControllerManager:
           enabled: false
         kubeScheduler:
@@ -83,7 +77,7 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
-      # CRD стека больше лимита в 262144 байта для kubectl-аннотации.
+      # CRD стека превышают лимит kubectl-аннотации в 262144 байта.
       - ServerSideApply=true
     retry:
       limit: 5

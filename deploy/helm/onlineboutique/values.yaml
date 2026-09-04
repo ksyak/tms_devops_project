@@ -33,14 +33,15 @@ networkPolicies:
   # Specifies if the NetworkPolicies are created or not. If true, one fine granular NetworkPolicy per app is created.
   create: false
 
-# Добавлено к upstream-чарту: единая точка входа через Ingress Controller.
-# Включается в values-prod.yaml.
+# Точка входа через Ingress Controller.
 ingress:
   create: false
   className: nginx
-  # Пусто = принимать любой Host (доступ по IP балансировщика).
+  # Пусто = любой Host.
   host: ""
   annotations: {}
+  # Namespace контроллера, используется в NetworkPolicy.
+  controllerNamespace: ingress-nginx
 
 sidecars:
   # Specifies if the Sidecars are created or not. If true, one fine granular Sidecar per app is created.
@@ -215,8 +216,7 @@ cartDatabase:
     name: redis-cart
     # Uses the public redis image from Docker Hub, otherwise will use the images.repository.
     publicRepository: true
-    # Добавлено к upstream-чарту. false = поведение Google: Deployment с
-    # emptyDir, корзина теряется при рестарте пода. true = StatefulSet с PVC.
+    # false = Deployment с emptyDir, true = StatefulSet с PVC.
     persistence:
       enabled: false
       # standard-rwo в GKE это pd-balanced.

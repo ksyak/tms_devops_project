@@ -1,7 +1,5 @@
 {{- if and .Values.ingress .Values.ingress.create }}
-# Единственная точка входа снаружи. Добавлено к upstream-чарту: у Google
-# витрина публикуется через Service типа LoadBalancer, нам же нужен один
-# общий Ingress, чтобы не платить за отдельный балансировщик на каждый сервис.
+# Точка входа снаружи вместо Service типа LoadBalancer.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

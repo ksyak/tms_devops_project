@@ -1,24 +1,14 @@
-# Локальный запуск Online Boutique без Kubernetes.
-#
-# В upstream compose-файла нет — приложение рассчитано на Skaffold и
-# манифесты Kubernetes. Этот файл написан для диплома.
-#
-# Используются опубликованные образы upstream, а не сборка из исходников:
-# 11 сервисов на пяти языках собираются долго и требуют тулчейнов Go, .NET,
-# Node, Python и Java. Для проверки «приложение живо локально» это лишнее.
-# Собрать из исходников можно, раскомментировав build у нужного сервиса.
+# Локальный запуск без Kubernetes.
 #
 #   docker compose up -d
 #   curl -f http://localhost:8080/_healthz
-#   открыть http://localhost:8080
 #
-# ВАЖНО про адреса: в Kubernetes Service умеет отображать порт на другой
-# targetPort, поэтому в манифестах встречаются emailservice:5000 и
-# frontend:80. Здесь такого слоя нет, контейнеры общаются напрямую,
-# и адреса указывают на реальные порты процессов.
-
-# REGISTRY и TAG можно переопределить, чтобы запустить локально образы,
-# собранные нашим CI: REGISTRY=europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique TAG=<sha> docker compose up
+# По умолчанию берутся опубликованные образы; сборка из исходников —
+# раскомментировать build у нужного сервиса. REGISTRY и TAG переопределяются
+# через окружение.
+#
+# Адреса сервисов отличаются от манифестов Kubernetes: там emailservice:5000
+# и frontend:80 — порты Service, здесь контейнеры общаются напрямую.
 
 services:
   frontend:
@@ -105,7 +95,6 @@ services:
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
       SHIPPING_SERVICE_ADDR: shippingservice:50051
       PAYMENT_SERVICE_ADDR: paymentservice:50051
-      # В манифестах здесь emailservice:5000 — это порт Service, а не процесса.
       EMAIL_SERVICE_ADDR: emailservice:8080
       CURRENCY_SERVICE_ADDR: currencyservice:7000
       CART_SERVICE_ADDR: cartservice:7070
@@ -124,7 +113,6 @@ services:
 
   redis-cart:
     image: redis:alpine
-    # Локально данные тоже переживают рестарт — как и в кластере на PVC.
     volumes:
       - redis-data:/data
     healthcheck:
@@ -136,7 +124,6 @@ services:
   loadgenerator:
     image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/loadgenerator:${TAG:-v0.10.6}
     environment:
-      # В манифестах frontend:80 — снова порт Service.
       FRONTEND_ADDR: frontend:8080
       USERS: "10"
       RATE: "1"

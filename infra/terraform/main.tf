@@ -3,10 +3,7 @@ provider "google" {
   region  = var.region
 }
 
-# API, без которых остальное не создастся.
-#
-# disable_on_destroy = false — принципиально: проект переиспользуется под другие
-# задачи, и выключение API на terraform destroy сломало бы чужие ресурсы.
+# disable_on_destroy = false: проект используется и под другие задачи.
 resource "google_project_service" "required" {
   for_each = toset([
     "compute.googleapis.com",

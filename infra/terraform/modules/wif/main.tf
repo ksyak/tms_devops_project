@@ -1,6 +1,5 @@
-# Workload Identity Federation: GitHub Actions обменивает свой OIDC-токен
-# на короткоживущий токен GCP. JSON-ключа сервисного аккаунта не существует
-# в природе, значит его нельзя утечь в git — снимает риск штрафа −20.
+# GitHub Actions обменивает OIDC-токен на короткоживущий токен GCP.
+# Ключей сервисного аккаунта не создаётся.
 
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "${var.name_prefix}-gh-pool"
@@ -20,8 +19,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository_owner" = "assertion.repository_owner"
   }
 
-  # Без attribute_condition GCP отказывается создавать провайдер с маппингом
-  # на repository: иначе токен любого репозитория GitHub подошёл бы.
+  # Без условия подошёл бы токен любого репозитория GitHub.
   attribute_condition = "assertion.repository_owner == \"${var.github_owner}\""
 
   oidc {
@@ -44,7 +42,7 @@ resource "google_project_iam_member" "ci" {
   member  = "serviceAccount:${google_service_account.ci.email}"
 }
 
-# Доверие сужено до одного репозитория, а не до всего owner.
+# Доверие сужено до одного репозитория.
 resource "google_service_account_iam_member" "ci_wif" {
   service_account_id = google_service_account.ci.name
   role               = "roles/iam.workloadIdentityUser"

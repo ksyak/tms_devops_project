@@ -215,9 +215,7 @@ metadata:
 {{- $redisPersistence := and .Values.cartDatabase.inClusterRedis.persistence .Values.cartDatabase.inClusterRedis.persistence.enabled }}
 apiVersion: apps/v1
 {{- if $redisPersistence }}
-# StatefulSet, а не Deployment: корзина должна переживать пересоздание пода.
-# В upstream здесь Deployment с emptyDir, и данные теряются при каждом
-# рестарте. Переключается через cartDatabase.inClusterRedis.persistence.
+# StatefulSet вместо Deployment: данные переживают пересоздание пода.
 kind: StatefulSet
 {{- else }}
 kind: Deployment

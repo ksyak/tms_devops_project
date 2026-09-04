@@ -1,9 +1,7 @@
 name: CD
 
-# Запускается только после успешного CI и только на main.
-# Единственное, что делает — правит тег образа в Git. В кластер не ходит:
-# доступа к нему у CI нет вообще, и это принципиально. Дальше изменение
-# подхватывает Argo CD.
+# Правит тег образа в Git после успешного CI на main.
+# Доступа к кластеру не имеет, изменение подхватывает Argo CD.
 on:
   workflow_run:
     workflows: [CI]
@@ -20,16 +18,15 @@ env:
 jobs:
   bump:
     name: Обновить тег в Git
-    # Падение CI не должно приводить к выкатке.
+
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
-          # Токен по умолчанию: коммиты, сделанные GITHUB_TOKEN, не запускают
-          # новые прогоны workflow. Это встроенная защита от бесконечного
-          # цикла CI -> bump -> CI. Второй рубеж — [skip ci] в сообщении.
+          # Коммиты от GITHUB_TOKEN не запускают workflow — защита от цикла
+          # CI -> bump -> CI. Второй рубеж — [skip ci] в сообщении.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Подставить sha собранных образов

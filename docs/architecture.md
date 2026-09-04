@@ -2,29 +2,27 @@
 
 ## Приложение
 
-Online Boutique — демонстрационный интернет-магазин Google из одиннадцати
-микросервисов, общающихся по gRPC. Копия репозитория
-`GoogleCloudPlatform/microservices-demo`; upstream сохранён как remote
-`upstream`, поэтому происхождение кода проверяемо.
+Online Boutique — интернет-магазин из одиннадцати микросервисов, связанных
+по gRPC. Копия `GoogleCloudPlatform/microservices-demo`, upstream сохранён
+как одноимённый remote.
 
-| Сервис | Язык | Порт | Роль |
+| Сервис | Язык | Порт | Назначение |
 |---|---|---|---|
-| frontend | Go | 8080 | HTTP-витрина, единственный сервис с веб-интерфейсом |
-| productcatalogservice | Go | 3550 | Каталог товаров |
-| cartservice | C# | 7070 | Корзина, единственный сервис с состоянием |
-| checkoutservice | Go | 5050 | Оформление заказа, оркестрирует остальные |
+| frontend | Go | 8080 | HTTP-витрина |
+| productcatalogservice | Go | 3550 | Каталог |
+| cartservice | C# | 7070 | Корзина |
+| checkoutservice | Go | 5050 | Оформление заказа |
 | shippingservice | Go | 50051 | Расчёт доставки |
-| paymentservice | Node.js | 50051 | Имитация оплаты |
-| emailservice | Python | 8080 | Имитация писем |
+| paymentservice | Node.js | 50051 | Оплата |
+| emailservice | Python | 8080 | Письма |
 | currencyservice | Node.js | 7000 | Конвертация валют |
 | recommendationservice | Python | 8080 | Рекомендации |
 | adservice | Java | 9555 | Баннеры |
-| loadgenerator | Python/Locust | — | Синтетическая нагрузка |
+| loadgenerator | Python | — | Синтетическая нагрузка |
 | redis-cart | — | 6379 | Хранилище корзин |
 
-Двенадцатый сервис из `src/`, `shoppingassistantservice`, намеренно не
-собирается и не разворачивается: он не входит ни в Helm chart, ни в
-манифесты upstream и требует ключа к Gemini API.
+`shoppingassistantservice` из `src/` не собирается и не разворачивается:
+он отсутствует в чарте и манифестах и требует ключа Gemini API.
 
 ## Схема
 
@@ -33,11 +31,11 @@ flowchart TB
   Dev[git push] --> CI[GitHub Actions: CI]
   CI --> Reg[(Artifact Registry)]
   CI --> CD[GitHub Actions: CD]
-  CD -->|только main: bump тега| Git[(Git: values-prod.yaml)]
+  CD -->|main: bump тега| Git[(Git: values-prod.yaml)]
   Git --> Argo[Argo CD]
   Argo -->|sync| GKE
 
-  subgraph GKE["GKE, зона europe-central2-a"]
+  subgraph GKE["GKE, europe-central2-a"]
     Ing[NGINX Ingress]
     App[11 микросервисов]
     DB[(redis-cart<br/>StatefulSet + PVC)]
@@ -53,92 +51,73 @@ flowchart TB
   Mon --> TG
 ```
 
-## Ключевое свойство: два раздельных потока
-
-**Образ** едет в registry. **Конфигурация** едет в Git. Пересекаются они
-только внутри кластера, и сводит их Argo CD.
-
-CI не имеет и не должен иметь доступа к кластеру: у сервисного аккаунта
-`boutique-ci` единственная роль — `roles/artifactregistry.writer`.
-`kubectl apply` из пайплайна не выполняется нигде. Поэтому утечка
-CI-креденшелов не даёт власти над кластером, а состояние кластера всегда
-описано в Git и воспроизводимо.
+Образы публикуются в registry, конфигурация — в Git. Сводит их Argo CD.
+CI доступа к кластеру не имеет: у сервисного аккаунта `boutique-ci`
+единственная роль `roles/artifactregistry.writer`, `kubectl apply` в
+пайплайнах не выполняется.
 
 ## Инфраструктура
 
-Terraform, разбитый на модули, состояние в GCS с версионированием.
+Terraform, состояние в GCS с версионированием.
 
-| Модуль | Что создаёт |
+| Модуль | Ресурсы |
 |---|---|
 | `network` | VPC, подсеть, вторичные диапазоны под поды и сервисы |
-| `gke` | Кластер, пул нод, отдельный service account для нод |
-| `registry` | Artifact Registry в формате Docker |
-| `wif` | Workload Identity Pool, OIDC-провайдер, SA для CI |
+| `gke` | Кластер, пул нод, service account нод |
+| `registry` | Artifact Registry, формат Docker |
+| `wif` | Workload Identity Pool, OIDC-провайдер, service account CI |
 
-Решения, которые стоит объяснить:
+Принятые решения:
 
-**Зональный кластер, а не региональный.** За один зональный кластер Google
-не берёт плату за управление, и нод нужно втрое меньше. Плата — отсутствие
-отказоустойчивости на уровне зоны, что для учебного стенда приемлемо.
+- **Зональный кластер.** Дешевле регионального, не тарифицируется плата за
+  управление. Отказоустойчивость на уровне зоны отсутствует.
+- **Dataplane V2.** NetworkPolicy без установки Calico. С устаревшим блоком
+  `network_policy` несовместим.
+- **Отдельный service account нод** вместо Compute Engine default SA с
+  ролью Editor на весь проект. Выдано пять минимальных ролей.
+- **Workload Identity Federation** вместо ключа сервисного аккаунта. Доверие
+  ограничено одним репозиторием через `attribute.repository`.
+- **`disable_on_destroy = false`** у включаемых API: проект используется и
+  под другие задачи.
 
-**Dataplane V2 вместо legacy network policy.** Даёт NetworkPolicy нативно,
-без установки Calico, и не конфликтует с устаревшим блоком `network_policy`.
+## Данные
 
-**Отдельный service account для нод.** По умолчанию GKE выдаёт нодам
-Compute Engine default SA с ролью Editor на весь проект. Проект здесь общий
-с другими задачами, поэтому нодам выданы пять минимальных ролей.
-
-**Workload Identity Federation вместо ключа сервисного аккаунта.** GitHub
-Actions обменивает свой OIDC-токен на короткоживущий токен GCP. JSON-ключа
-не существует, значит его нельзя потерять или закоммитить. Доверие сужено
-до конкретного репозитория через `attribute.repository`.
-
-**`disable_on_destroy = false` у включаемых API.** Проект переиспользуется
-под другие задачи; выключение `compute` или `container` на `terraform
-destroy` сломало бы чужие ресурсы.
-
-## Данные и персистентность
-
-В upstream `redis-cart` — это Deployment с `emptyDir`, и корзина теряется
-при каждом пересоздании пода. Здесь он переведён в StatefulSet с
-`volumeClaimTemplates`, StorageClass `standard-rwo` (это `pd-balanced`
-в GKE), том 8 ГиБ.
-
-Переключатель `cartDatabase.inClusterRedis.persistence.enabled` оставлен
-намеренно: он позволяет показать оба состояния и продемонстрировать
-разницу, а не рассказывать о ней.
+`redis-cart` развёрнут как StatefulSet с `volumeClaimTemplates`,
+StorageClass `standard-rwo`, том 8 ГиБ. В upstream это Deployment с
+`emptyDir`. Режим переключается через
+`cartDatabase.inClusterRedis.persistence.enabled`.
 
 ## Мониторинг
 
-kube-prometheus-stack, развёрнутый через Argo CD, а не helm-командой.
+kube-prometheus-stack, развёрнут через Argo CD.
 
-Метрики ошибок и задержки снимаются с NGINX Ingress. Причина: Online
-Boutique не отдаёт `/metrics` — в сервисы зашит OpenTelemetry, а не
-Prometheus-экспортер. Ingress пропускает через себя весь пользовательский
-трафик, поэтому даёт и RPS, и коды ответов, и время ответа. Состояние
-подов берётся из kube-state-metrics.
+Метрики ошибок и задержки снимаются с NGINX Ingress: приложение не отдаёт
+`/metrics`, в сервисы встроен OpenTelemetry. Состояние подов берётся из
+kube-state-metrics.
 
-Компоненты `kubeControllerManager`, `kubeScheduler`, `kubeEtcd` и
-`kubeProxy` в чарте выключены: в managed-кластере control plane принадлежит
-Google и метрики с него недоступны. Оставить их включёнными — получить
-постоянно красные targets.
+Компоненты `kubeControllerManager`, `kubeScheduler`, `kubeEtcd`, `kubeProxy`
+выключены — в GKE control plane управляется провайдером и метрики с него
+недоступны.
+
+Алерты: `BoutiquePodNotReady`, `BoutiqueHighErrorRate`,
+`BoutiqueHighLatency`.
 
 ## Структура репозитория
 
 ```text
-├── docker-compose.yml              локальный запуск без Kubernetes
-├── infra/terraform/                IaC: VPC, GKE, registry, WIF
+├── docker-compose.yml              локальный запуск
+├── infra/terraform/                VPC, GKE, registry, WIF
 │   └── modules/                    network, gke, registry, wif
 ├── deploy/
-│   ├── helm/onlineboutique/        чарт приложения (+ Ingress, + PVC)
-│   ├── argocd/                     Application: приложение, мониторинг, правила
-│   └── monitoring/rules/           PrometheusRule с алертами
+│   ├── helm/onlineboutique/        чарт приложения
+│   ├── argocd/                     Application
+│   └── monitoring/rules/           PrometheusRule
 ├── scripts/
-│   ├── bootstrap.sh                подъём стенда одной командой
-│   └── teardown.sh                 снос с проверкой остатков
+│   ├── bootstrap.sh                развёртывание
+│   └── teardown.sh                 удаление
 ├── .github/workflows/
 │   ├── ci.yaml                     lint, тесты, сборка, публикация
-│   └── cd.yaml                     bump тега в Git на main
-├── src/                            исходники микросервисов
-└── docs/                           architecture.md, runbook.md
+│   └── cd.yaml                     обновление тега на main
+├── src/                            исходники сервисов
+└── docs/
 ```

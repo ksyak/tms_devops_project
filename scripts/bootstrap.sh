@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 #
-# Поднимает стенд с нуля одной командой:
+# Разворачивает стенд:
 #   PROJECT_ID=<проект> ./scripts/bootstrap.sh
 #
-# Что делает: preflight -> бакет под tfstate -> terraform (VPC, GKE, Artifact
-# Registry, WIF) -> kubeconfig -> NGINX Ingress -> Argo CD -> регистрация
-# Application -> ожидание готовности -> печать URL.
+# preflight -> бакет под tfstate -> terraform -> kubeconfig -> Argo CD ->
+# мониторинг -> NGINX Ingress -> Application -> печать URL. Идемпотентен.
 #
-# Идемпотентен: повторный запуск не ломает уже созданное.
-#
-# Ручных шагов ровно два, и оба про аутентификацию человека — их невозможно
-# автоматизировать по определению:
+# Предварительно требуется:
 #   gcloud auth login && gcloud auth application-default login
 #   gcloud billing projects link <проект> --billing-account=<ID>
 
@@ -26,12 +22,11 @@ CLUSTER_NAME="${CLUSTER_NAME:-boutique}"
 STATE_BUCKET="${STATE_BUCKET:-${PROJECT_ID}-tfstate}"
 APP_NAMESPACE="${APP_NAMESPACE:-boutique}"
 
-# Под этот репозиторий выписывается доверие Workload Identity Federation.
+# Репозиторий, которому доверяет Workload Identity Federation.
 GITHUB_OWNER="${GITHUB_OWNER:-ksyak}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-ksyak/tms_devops_project}"
 
-# Версии чартов прибиты намеренно: без этого «одна команда» перестаёт быть
-# воспроизводимой — через месяц те же скрипты поставят другие версии.
+# Версии чартов зафиксированы для воспроизводимости.
 INGRESS_NGINX_VERSION="${INGRESS_NGINX_VERSION:-4.15.1}"
 ARGOCD_VERSION="${ARGOCD_VERSION:-10.7.1}"
 
@@ -40,7 +35,7 @@ warn() { printf '\033[1;33m!   %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mX   %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --- 1. Preflight -----------------------------------------------------------
-# Падать здесь дёшево. Падать на середине terraform apply — дорого.
+# Проверки до создания ресурсов.
 
 log "Preflight"
 
@@ -66,8 +61,7 @@ printf '    зона:    %s\n' "${ZONE}"
 printf '    кластер: %s\n' "${CLUSTER_NAME}"
 
 # --- 2. Бакет под состояние Terraform --------------------------------------
-# Курица и яйцо: бакет нельзя создать тем же terraform, чьё состояние он хранит.
-# Поэтому создаётся здесь, скриптом, а не в IaC.
+# Бакет не может быть создан тем же terraform, чьё состояние хранит.
 
 log "Бакет под tfstate: gs://${STATE_BUCKET}"
 
@@ -78,7 +72,7 @@ else
     --project="${PROJECT_ID}" \
     --location="${REGION}" \
     --uniform-bucket-level-access
-  # Версионирование: даёт откатить состояние, если apply испортит его.
+  # Версионирование для отката состояния.
   gcloud storage buckets update "gs://${STATE_BUCKET}" --versioning
 fi
 
@@ -105,7 +99,7 @@ WIF_PROVIDER="$(terraform -chdir="${TF_DIR}" output -raw wif_provider)"
 CI_SA="$(terraform -chdir="${TF_DIR}" output -raw ci_service_account)"
 
 # --- 4. kubeconfig ----------------------------------------------------------
-# Получаем на лету, в git не хранится (требование ТЗ).
+# Получаем на лету, в git не хранится.
 
 log "kubeconfig"
 
@@ -114,7 +108,7 @@ gcloud container clusters get-credentials "${CLUSTER_NAME}" \
 
 kubectl cluster-info >/dev/null || die "кластер недоступен"
 
-# --- 5. NGINX Ingress -------------------------------------------------------
+# --- 5. Argo CD -------------------------------------------------------------
 
 log "Argo CD"
 
@@ -128,16 +122,10 @@ helm upgrade --install argocd argo/argo-cd \
   --wait --timeout 10m
 
 # --- 6. Стек мониторинга ----------------------------------------------------
-# Ставится раньше Ingress, и порядок здесь не эстетический.
-#
-# У NGINX включён ServiceMonitor, а тип ServiceMonitor приходит с CRD от
-# prometheus-operator. Поставить Ingress первым — получить отказ
-# "no matches for kind ServiceMonitor" и незамеченный провал установки.
-#
-# Чарт стека тянется из Helm-репозитория, а не из нашего git, поэтому это
-# приложение поднимается ещё до того, как репозиторий вообще запушен.
+# Ставится до Ingress: у NGINX включён ServiceMonitor, а его CRD приносит
+# prometheus-operator. В обратном порядке установка Ingress падает.
 
-log "Стек мониторинга (он приносит CRD для ServiceMonitor)"
+log "Стек мониторинга"
 
 kubectl apply -f "${REPO_ROOT}/deploy/argocd/monitoring.yaml"
 
@@ -161,8 +149,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait --timeout 10m
 
 # --- 8. Регистрация остальных Application ----------------------------------
-# Дальше состояние кластера приводит к описанному в Git только Argo CD.
-# Здесь мы регистрируем приложения и больше в кластер руками не пишем.
+# Дальше кластер приводит к состоянию из Git только Argo CD.
 
 log "Регистрация Argo CD Application"
 

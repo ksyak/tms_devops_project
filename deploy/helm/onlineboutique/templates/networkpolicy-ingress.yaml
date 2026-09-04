@@ -1,0 +1,27 @@
+{{- if and .Values.networkPolicies.create .Values.ingress .Values.ingress.create }}
+# Политика frontend пропускает трафик только от loadgenerator, поэтому
+# Ingress Controller из другого namespace до пода не доходит.
+# NetworkPolicy складываются по объединению: открывается один порт.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.frontend.name }}-from-ingress-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.frontend.name }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ .Values.frontend.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Метка проставляется каждому namespace автоматически.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.ingress.controllerNamespace }}
+      ports:
+        - port: 8080
+          protocol: TCP
+{{- end }}
