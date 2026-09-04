@@ -95,7 +95,7 @@ spec:
         image: busybox:1.38.0@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
         env:
         - name: FRONTEND_ADDR
-          value: "{{ .Values.frontend.name }}:80"
+          value: {{ .Values.loadGenerator.frontendAddr | default (printf "%s:80" .Values.frontend.name) | quote }}
       {{- end }}
       containers:
       - name: main
@@ -109,7 +109,7 @@ spec:
         image: {{ .Values.images.repository }}/{{ .Values.loadGenerator.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
         env:
         - name: FRONTEND_ADDR
-          value: "{{ .Values.frontend.name }}:80"
+          value: {{ .Values.loadGenerator.frontendAddr | default (printf "%s:80" .Values.frontend.name) | quote }}
         - name: USERS
           value: "10"
         - name: RATE

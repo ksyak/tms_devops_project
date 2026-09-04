@@ -153,6 +153,10 @@ loadGenerator:
   create: true
   name: loadgenerator
   checkFrontendInitContainer: true
+  # Пусто = обращаться к Service frontend напрямую. Если указать адрес
+  # Ingress Controller, нагрузка пойдёт тем же путём, что у пользователя,
+  # и попадёт в метрики Ingress.
+  frontendAddr: ""
   resources:
     requests:
       cpu: 300m
