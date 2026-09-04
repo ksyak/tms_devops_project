@@ -22,9 +22,11 @@ variable "cluster_name" {
 }
 
 variable "node_count" {
-  description = "Количество нод. Online Boutique из 11 сервисов укладывается в 3 x e2-standard-2"
+  description = "Количество нод"
   type        = number
-  default     = 3
+  # Три ноды покрывают сумму requests, но не оставляют запаса на отказ одной
+  # из них, и KubeCPUOvercommit горит постоянно.
+  default = 4
 }
 
 variable "machine_type" {

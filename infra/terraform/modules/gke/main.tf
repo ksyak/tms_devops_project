@@ -62,8 +62,20 @@ resource "google_container_cluster" "this" {
     }
   }
 
-  logging_service    = "logging.googleapis.com/kubernetes"
-  monitoring_service = "monitoring.googleapis.com/kubernetes"
+  logging_config {
+    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
+  }
+
+  monitoring_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+
+    # Managed Prometheus включён в GKE по умолчанию и дублировал бы
+    # kube-prometheus-stack: лишние поды на каждой ноде и оплата за приём
+    # метрик.
+    managed_prometheus {
+      enabled = false
+    }
+  }
 }
 
 resource "google_container_node_pool" "primary" {

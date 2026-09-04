@@ -61,7 +61,10 @@ spec:
               label: grafana_dashboard
               searchNamespace: ALL
 
-        # Control plane в GKE управляется провайдером, метрики недоступны.
+        # Control plane и DNS в GKE управляются провайдером, метрики
+        # по ожидаемым адресам недоступны.
+        coreDns:
+          enabled: false
         kubeControllerManager:
           enabled: false
         kubeScheduler:
