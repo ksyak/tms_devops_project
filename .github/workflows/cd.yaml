@@ -1,0 +1,75 @@
+name: CD
+
+# Запускается только после успешного CI и только на main.
+# Единственное, что делает — правит тег образа в Git. В кластер не ходит:
+# доступа к нему у CI нет вообще, и это принципиально. Дальше изменение
+# подхватывает Argo CD.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  VALUES: deploy/helm/onlineboutique/values-prod.yaml
+  IMAGE_PREFIX: europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique
+
+jobs:
+  bump:
+    name: Обновить тег в Git
+    # Падение CI не должно приводить к выкатке.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Токен по умолчанию: коммиты, сделанные GITHUB_TOKEN, не запускают
+          # новые прогоны workflow. Это встроенная защита от бесконечного
+          # цикла CI -> bump -> CI. Второй рубеж — [skip ci] в сообщении.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Подставить sha собранных образов
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -e
+          yq -i ".images.repository = strenv(IMAGE_PREFIX)" "${VALUES}"
+          yq -i ".images.tag = strenv(SHA)" "${VALUES}"
+          echo "--- стало ---"
+          yq '.images' "${VALUES}"
+
+      - name: Закоммитить
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if git diff --quiet -- "${VALUES}"; then
+            echo "тег не изменился, коммитить нечего"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${VALUES}"
+          git commit -m "deploy: образы ${SHA::7} [skip ci]"
+          git push
+
+      - name: Telegram
+        if: always()
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RESULT: ${{ job.status == 'success' && 'выкатка запрошена' || 'ПРОВАЛ выкатки' }}
+        run: |
+          text="CD: ${RESULT}
+          Тег образов: ${SHA::7}
+          Argo CD синхронизирует кластер автоматически.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            --data-urlencode "text=${text}" > /dev/null

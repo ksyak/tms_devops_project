@@ -1,0 +1,186 @@
+name: CI
+
+# Требование ТЗ: lint -> сборка -> автотесты -> публикация артефактов
+# на ЛЮБОЙ ветке. Деплоя здесь нет и быть не должно: в кластер пишет
+# только Argo CD.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+# Экономит минуты: новый пуш в ту же ветку отменяет предыдущий прогон.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Нужно для Workload Identity Federation: экшен обменивает OIDC-токен
+  # GitHub на токен GCP. Ключей сервисного аккаунта в секретах нет.
+  id-token: write
+
+env:
+  REGISTRY: europe-central2-docker.pkg.dev
+  IMAGE_PREFIX: europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dockerfile (hadolint)
+        run: |
+          set -e
+          for f in $(find src -name Dockerfile -not -path '*/node_modules/*'); do
+            echo "::group::$f"
+            docker run --rm -i hadolint/hadolint:latest-alpine \
+              hadolint --failure-threshold error - < "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Helm
+        run: |
+          helm lint deploy/helm/onlineboutique \
+            -f deploy/helm/onlineboutique/values.yaml \
+            -f deploy/helm/onlineboutique/values-prod.yaml
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+
+      - name: Terraform
+        run: |
+          terraform -chdir=infra/terraform fmt -recursive -check
+          # -backend=false: валидация не должна лезть в GCS за состоянием.
+          terraform -chdir=infra/terraform init -backend=false -input=false
+          terraform -chdir=infra/terraform validate
+
+  test:
+    name: Тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: go test
+        run: |
+          set -e
+          # Только те сервисы, где в upstream действительно есть тесты.
+          for s in checkoutservice frontend productcatalogservice shippingservice; do
+            echo "::group::$s"
+            (cd "src/$s" && go test ./...)
+            echo "::endgroup::"
+          done
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: dotnet test (cartservice)
+        run: dotnet test src/cartservice/tests --verbosity minimal
+
+  build:
+    name: Сборка ${{ matrix.service }}
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    strategy:
+      # Один упавший сервис не должен отменять сборку остальных —
+      # иначе непонятно, сломан один или все.
+      fail-fast: false
+      matrix:
+        include:
+          - { service: adservice,             context: src/adservice }
+          - { service: cartservice,           context: src/cartservice/src }
+          - { service: checkoutservice,       context: src/checkoutservice }
+          - { service: currencyservice,       context: src/currencyservice }
+          - { service: emailservice,          context: src/emailservice }
+          - { service: frontend,              context: src/frontend }
+          - { service: loadgenerator,         context: src/loadgenerator }
+          - { service: paymentservice,        context: src/paymentservice }
+          - { service: productcatalogservice, context: src/productcatalogservice }
+          - { service: recommendationservice, context: src/recommendationservice }
+          - { service: shippingservice,       context: src/shippingservice }
+          # shoppingassistantservice намеренно не собирается: он не входит
+          # ни в чарт, ни в манифесты, и требует ключа Gemini.
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Логин в Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          # Тег — git sha. :latest в проде запрещён требованиями ТЗ.
+          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  chart:
+    name: Публикация чарта
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Логин в OCI-репозиторий
+        run: |
+          gcloud auth print-access-token \
+            | helm registry login -u oauth2accesstoken --password-stdin ${{ env.REGISTRY }}
+
+      # Второй артефакт CI по требованию трека: не только образ, но и чарт.
+      - name: Упаковать и запушить
+        run: |
+          helm package deploy/helm/onlineboutique --version "0.10.6+${GITHUB_SHA::7}"
+          helm push onlineboutique-*.tgz "oci://${IMAGE_PREFIX}/charts"
+
+  notify:
+    name: Уведомление
+    needs: [lint, test, build, chart]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Telegram
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # needs.*.result даёт success/failure/cancelled/skipped по каждой job.
+          RESULT: ${{ contains(needs.*.result, 'failure') && 'ПРОВАЛ' || 'успех' }}
+        run: |
+          text="CI ${RESULT}
+          Репозиторий: ${GITHUB_REPOSITORY}
+          Ветка: ${GITHUB_REF_NAME}
+          Коммит: ${GITHUB_SHA::7}
+          Автор: ${GITHUB_ACTOR}
+          Прогон: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            --data-urlencode "text=${text}" > /dev/null

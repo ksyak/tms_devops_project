@@ -1,0 +1,148 @@
+# Локальный запуск Online Boutique без Kubernetes.
+#
+# В upstream compose-файла нет — приложение рассчитано на Skaffold и
+# манифесты Kubernetes. Этот файл написан для диплома.
+#
+# Используются опубликованные образы upstream, а не сборка из исходников:
+# 11 сервисов на пяти языках собираются долго и требуют тулчейнов Go, .NET,
+# Node, Python и Java. Для проверки «приложение живо локально» это лишнее.
+# Собрать из исходников можно, раскомментировав build у нужного сервиса.
+#
+#   docker compose up -d
+#   curl -f http://localhost:8080/_healthz
+#   открыть http://localhost:8080
+#
+# ВАЖНО про адреса: в Kubernetes Service умеет отображать порт на другой
+# targetPort, поэтому в манифестах встречаются emailservice:5000 и
+# frontend:80. Здесь такого слоя нет, контейнеры общаются напрямую,
+# и адреса указывают на реальные порты процессов.
+
+# REGISTRY и TAG можно переопределить, чтобы запустить локально образы,
+# собранные нашим CI: REGISTRY=europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique TAG=<sha> docker compose up
+
+services:
+  frontend:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/frontend:${TAG:-v0.10.6}
+    # build: ./src/frontend
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+      RECOMMENDATION_SERVICE_ADDR: recommendationservice:8080
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      CHECKOUT_SERVICE_ADDR: checkoutservice:5050
+      AD_SERVICE_ADDR: adservice:9555
+      ENABLE_PROFILER: "0"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/_healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      - productcatalogservice
+      - currencyservice
+      - cartservice
+      - recommendationservice
+      - shippingservice
+      - checkoutservice
+      - adservice
+
+  productcatalogservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/productcatalogservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "3550"
+      DISABLE_PROFILER: "1"
+
+  currencyservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/currencyservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "7000"
+      DISABLE_PROFILER: "1"
+
+  cartservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/cartservice:${TAG:-v0.10.6}
+    environment:
+      REDIS_ADDR: redis-cart:6379
+    depends_on:
+      redis-cart:
+        condition: service_healthy
+
+  recommendationservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/recommendationservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      DISABLE_PROFILER: "1"
+    depends_on:
+      - productcatalogservice
+
+  shippingservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/shippingservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+
+  paymentservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/paymentservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+
+  emailservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/emailservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "8080"
+      DISABLE_PROFILER: "1"
+
+  checkoutservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/checkoutservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "5050"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      PAYMENT_SERVICE_ADDR: paymentservice:50051
+      # В манифестах здесь emailservice:5000 — это порт Service, а не процесса.
+      EMAIL_SERVICE_ADDR: emailservice:8080
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+    depends_on:
+      - productcatalogservice
+      - shippingservice
+      - paymentservice
+      - emailservice
+      - currencyservice
+      - cartservice
+
+  adservice:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/adservice:${TAG:-v0.10.6}
+    environment:
+      PORT: "9555"
+
+  redis-cart:
+    image: redis:alpine
+    # Локально данные тоже переживают рестарт — как и в кластере на PVC.
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  loadgenerator:
+    image: ${REGISTRY:-us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo}/loadgenerator:${TAG:-v0.10.6}
+    environment:
+      # В манифестах frontend:80 — снова порт Service.
+      FRONTEND_ADDR: frontend:8080
+      USERS: "10"
+      RATE: "1"
+    depends_on:
+      frontend:
+        condition: service_healthy
+
+volumes:
+  redis-data:
