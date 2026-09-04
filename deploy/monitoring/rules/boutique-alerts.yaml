@@ -1,7 +1,11 @@
-# Доступность подов, доля ошибок, задержка.
+# Доступность подов, доступность витрины, время ответа.
 #
-# Ошибки и задержка берутся с NGINX Ingress: приложение не отдаёт /metrics,
-# в нём OpenTelemetry, а не Prometheus-экспортер.
+# Источники метрик выбраны по факту наличия. Приложение не отдаёт /metrics
+# (в сервисы встроен OpenTelemetry), а ingress-nginx 1.15 больше не
+# собирает подробные метрики запросов: остался только процессный счётчик
+# без разбивки по кодам ответа и без гистограммы задержек. Поэтому
+# доступность и задержка снимаются пробами blackbox exporter, а состояние
+# подов берётся из kube-state-metrics.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -25,37 +29,30 @@ spec:
               не переходит в Ready. Смотреть: kubectl -n boutique describe
               pod {{ $labels.pod }} и kubectl -n boutique logs {{ $labels.pod }}.
 
-    - name: boutique.errors
-      rules:
-        - alert: BoutiqueHighErrorRate
-          # При нулевом трафике 0/0 = NaN, алерт не срабатывает.
-          expr: |
-            sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
-              /
-            sum(rate(nginx_ingress_controller_requests[5m]))
-              > 0.05
+        - alert: BoutiqueFrontendDown
+          # Проба идёт через Ingress Controller, то есть тем же путём, что
+          # и пользовательский запрос: ошибка означает недоступность
+          # витрины снаружи, а не только падение пода.
+          expr: probe_success{service="boutique-frontend"} == 0
           for: 2m
           labels:
             severity: critical
           annotations:
-            summary: "Более 5% запросов завершаются ошибкой 5xx"
+            summary: "Витрина не отвечает"
             description: >-
-              Текущая доля ошибок {{ $value | humanizePercentage }}.
-              Обычная причина — упал или недоступен один из бэкендов.
-              Смотреть: kubectl -n boutique get pods.
+              Проба {{ $labels.instance }} не возвращает 200 более двух
+              минут. Обычная причина — упал или недоступен один из
+              бэкендов. Смотреть: kubectl -n boutique get pods.
 
+    - name: boutique.latency
+      rules:
         - alert: BoutiqueHighLatency
-          expr: |
-            histogram_quantile(0.95,
-              sum by (le) (
-                rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
-              )
-            ) > 1
+          expr: probe_duration_seconds{service="boutique-frontend"} > 1
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "95-й перцентиль времени ответа выше 1 секунды"
+            summary: "Витрина отвечает дольше секунды"
             description: >-
-              p95 = {{ $value | humanizeDuration }}. Проверить нагрузку
-              (kubectl -n boutique get hpa) и ресурсы подов.
+              Время ответа {{ $value | humanizeDuration }}. Проверить
+              нагрузку и ресурсы подов: kubectl -n boutique top pods.

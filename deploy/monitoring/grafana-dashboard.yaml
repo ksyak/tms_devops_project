@@ -16,7 +16,7 @@ data:
       ],
       "timezone": "browser",
       "schemaVersion": 39,
-      "version": 1,
+      "version": 2,
       "refresh": "30s",
       "time": {
         "from": "now-1h",
@@ -47,7 +47,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(rate(nginx_ingress_controller_requests[5m]))",
+              "expr": "sum(rate(nginx_ingress_controller_nginx_process_requests_total[5m]))",
               "legendFormat": "",
               "refId": "A",
               "datasource": "${datasource}"
@@ -84,7 +84,7 @@ data:
         },
         {
           "type": "stat",
-          "title": "Доля ошибок 5xx",
+          "title": "Доступность витрины",
           "datasource": "${datasource}",
           "gridPos": {
             "x": 6,
@@ -94,7 +94,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum(rate(nginx_ingress_controller_requests{status=~\"5..\"}[5m])) / clamp_min(sum(rate(nginx_ingress_controller_requests[5m])), 0.001)",
+              "expr": "min(probe_success{service=\"boutique-frontend\"})",
               "legendFormat": "",
               "refId": "A",
               "datasource": "${datasource}"
@@ -102,25 +102,36 @@ data:
           ],
           "fieldConfig": {
             "defaults": {
-              "unit": "percentunit",
-              "decimals": 2,
+              "unit": "short",
+              "decimals": 0,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
                   {
-                    "color": "green",
+                    "color": "red",
                     "value": null
                   },
                   {
-                    "color": "orange",
-                    "value": 0.01
-                  },
-                  {
-                    "color": "red",
-                    "value": 0.05
+                    "color": "green",
+                    "value": 1
                   }
                 ]
-              }
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "недоступна",
+                      "index": 0
+                    },
+                    "1": {
+                      "text": "доступна",
+                      "index": 1
+                    }
+                  }
+                }
+              ]
             },
             "overrides": []
           },
@@ -139,7 +150,7 @@ data:
         },
         {
           "type": "stat",
-          "title": "Задержка p95",
+          "title": "Время ответа",
           "datasource": "${datasource}",
           "gridPos": {
             "x": 12,
@@ -149,7 +160,7 @@ data:
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))",
+              "expr": "max(probe_duration_seconds{service=\"boutique-frontend\"})",
               "legendFormat": "",
               "refId": "A",
               "datasource": "${datasource}"
@@ -245,7 +256,7 @@ data:
         },
         {
           "type": "timeseries",
-          "title": "Запросы по коду ответа",
+          "title": "Нагрузка через Ingress",
           "datasource": "${datasource}",
           "gridPos": {
             "x": 0,
@@ -255,8 +266,8 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (status) (rate(nginx_ingress_controller_requests[5m]))",
-              "legendFormat": "{{status}}",
+              "expr": "sum(rate(nginx_ingress_controller_nginx_process_requests_total[5m]))",
+              "legendFormat": "запросов/с",
               "refId": "A",
               "datasource": "${datasource}"
             }
@@ -286,7 +297,7 @@ data:
         },
         {
           "type": "timeseries",
-          "title": "Задержка по перцентилям",
+          "title": "Время ответа витрины",
           "datasource": "${datasource}",
           "gridPos": {
             "x": 12,
@@ -296,20 +307,20 @@ data:
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))",
-              "legendFormat": "p50",
+              "expr": "probe_duration_seconds{service=\"boutique-frontend\"}",
+              "legendFormat": "проба",
               "refId": "A",
               "datasource": "${datasource}"
             },
             {
-              "expr": "histogram_quantile(0.95, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))",
-              "legendFormat": "p95",
+              "expr": "probe_http_duration_seconds{service=\"boutique-frontend\", phase=\"connect\"}",
+              "legendFormat": "соединение",
               "refId": "B",
               "datasource": "${datasource}"
             },
             {
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))",
-              "legendFormat": "p99",
+              "expr": "probe_http_duration_seconds{service=\"boutique-frontend\", phase=\"processing\"}",
+              "legendFormat": "обработка",
               "refId": "C",
               "datasource": "${datasource}"
             }
@@ -462,7 +473,7 @@ data:
         },
         {
           "type": "timeseries",
-          "title": "Использование тома Redis",
+          "title": "Том Redis",
           "datasource": "${datasource}",
           "gridPos": {
             "x": 12,

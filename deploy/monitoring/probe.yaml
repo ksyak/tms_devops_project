@@ -1,0 +1,21 @@
+# Проба витрины через Ingress Controller: тот же путь, которым идёт
+# пользовательский запрос. Даёт probe_success и probe_duration_seconds.
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: boutique-frontend
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  interval: 30s
+  module: http_2xx
+  prober:
+    url: blackbox-prometheus-blackbox-exporter:9115
+    path: /probe
+  targets:
+    staticConfig:
+      static:
+        - http://ingress-nginx-controller.ingress-nginx.svc.cluster.local/
+      labels:
+        service: boutique-frontend

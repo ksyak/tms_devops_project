@@ -1,0 +1,55 @@
+# Blackbox exporter опрашивает витрину снаружи и даёт доступность и время
+# ответа. Нужен потому, что ingress-nginx 1.15 больше не собирает
+# подробные метрики запросов: остался только процессный счётчик без
+# разбивки по кодам ответа и без гистограммы задержек.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: blackbox
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus-blackbox-exporter
+    targetRevision: 11.18.0
+    helm:
+      releaseName: blackbox
+      values: |
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+
+        config:
+          modules:
+            http_2xx:
+              prober: http
+              timeout: 5s
+              http:
+                method: GET
+                valid_status_codes: [200]
+                preferred_ip_protocol: ip4
+                follow_redirects: true
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
