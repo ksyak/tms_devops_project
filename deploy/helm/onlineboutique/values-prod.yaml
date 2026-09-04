@@ -3,49 +3,38 @@
 
 images:
   # До первой сборки — публичные образы upstream, дальше Artifact Registry.
-  repository: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo
+  repository: europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique
   # Тег всегда явный, без :latest.
-  tag: "v0.10.6"
-
+  tag: "4c7e645e59a6bb18877a94094bc7165a1ec40366"
 # По одной политике на сервис. Применяются Dataplane V2.
 networkPolicies:
   create: true
-
 securityContext:
   enable: true
-
 seccompProfile:
   enable: true
   type: RuntimeDefault
-
 # Istio не используется.
 sidecars:
   create: false
-
 authorizationPolicies:
   create: false
-
 # Метрики снимает Prometheus в кластере.
 opentelemetryCollector:
   create: false
-
 googleCloudOperations:
   profiler: false
   tracing: false
   metrics: false
-
 ingress:
   create: true
   className: nginx
-
 frontend:
   # Снаружи стоит NGINX Ingress, второй балансировщик не нужен.
   externalService: false
-
 # Источник синтетической нагрузки.
 loadGenerator:
   create: true
-
 cartDatabase:
   inClusterRedis:
     # В upstream emptyDir: корзина теряется при рестарте пода.
