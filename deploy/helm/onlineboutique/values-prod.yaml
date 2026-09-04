@@ -1,0 +1,67 @@
+# Прод-значения. Накладываются поверх values.yaml.
+#
+# ЕДИНСТВЕННОЕ место, через которое новая версия попадает в кластер:
+# CI при merge в main правит здесь images.tag на git sha и коммитит.
+# Дальше Argo CD видит изменение в Git и синхронизирует кластер сам.
+
+images:
+  # На старте — публичные образы upstream, чтобы стенд поднялся до первого
+  # прогона CI. После первой успешной сборки CI переключает repository на
+  # наш Artifact Registry:
+  #   europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique
+  repository: us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo
+  # Тег всегда явный. :latest в prod запрещён требованиями ТЗ.
+  tag: "v0.10.6"
+
+# Бонус ТЗ: по одной гранулярной NetworkPolicy на сервис.
+# Кластер поднят на Dataplane V2, поэтому политики применяются нативно,
+# без доустановки Calico.
+networkPolicies:
+  create: true
+
+securityContext:
+  enable: true
+
+seccompProfile:
+  enable: true
+  type: RuntimeDefault
+
+# Istio в проекте не используется — входная точка это NGINX Ingress.
+sidecars:
+  create: false
+
+authorizationPolicies:
+  create: false
+
+# Метрики снимает Prometheus внутри кластера, экспорт в Cloud Operations
+# не нужен и только добавил бы расходов.
+opentelemetryCollector:
+  create: false
+
+googleCloudOperations:
+  profiler: false
+  tracing: false
+  metrics: false
+
+ingress:
+  create: true
+  className: nginx
+
+frontend:
+  # Собственный LoadBalancer фронтенду не нужен: снаружи стоит NGINX Ingress.
+  # Иначе в проекте появился бы второй балансировщик и второй платный IP.
+  externalService: false
+
+# Генератор нагрузки оставлен включённым: на нём строится демо мониторинга
+# (рост RPS -> рост latency -> срабатывание алерта).
+loadGenerator:
+  create: true
+
+cartDatabase:
+  inClusterRedis:
+    # В upstream здесь emptyDir и корзина теряется при рестарте пода.
+    # StatefulSet + PVC — требование ТЗ «БД в кластере на PVC».
+    persistence:
+      enabled: true
+      storageClassName: standard-rwo
+      size: 8Gi

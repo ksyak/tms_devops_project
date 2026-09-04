@@ -1,0 +1,65 @@
+# Алерты по приложению. ТЗ требует минимум два, здесь три:
+# доступность подов, доля ошибок и задержка.
+#
+# Метрики ошибок и задержки снимаются с NGINX Ingress, а не с самого
+# приложения: Online Boutique не отдаёт /metrics — в нём зашит
+# OpenTelemetry, а не Prometheus-экспортер. Ingress видит все запросы
+# к витрине, поэтому даёт и RPS, и коды ответов, и время ответа.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: boutique-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: boutique.availability
+      rules:
+        - alert: BoutiquePodNotReady
+          expr: kube_pod_status_ready{condition="true", namespace="boutique"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Под {{ $labels.pod }} не готов более 5 минут"
+            description: >-
+              Под {{ $labels.pod }} в namespace {{ $labels.namespace }}
+              не переходит в Ready. Смотреть: kubectl -n boutique describe
+              pod {{ $labels.pod }} и kubectl -n boutique logs {{ $labels.pod }}.
+
+    - name: boutique.errors
+      rules:
+        - alert: BoutiqueHighErrorRate
+          # Доля пятисоток от всех запросов через Ingress.
+          # При нулевом трафике получается 0/0 = NaN, и алерт не срабатывает.
+          expr: |
+            sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+              /
+            sum(rate(nginx_ingress_controller_requests[5m]))
+              > 0.05
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Более 5% запросов завершаются ошибкой 5xx"
+            description: >-
+              Текущая доля ошибок {{ $value | humanizePercentage }}.
+              Обычная причина — упал или недоступен один из бэкендов.
+              Смотреть: kubectl -n boutique get pods.
+
+        - alert: BoutiqueHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (
+                rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
+              )
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "95-й перцентиль времени ответа выше 1 секунды"
+            description: >-
+              p95 = {{ $value | humanizeDuration }}. Проверить нагрузку
+              (kubectl -n boutique get hpa) и ресурсы подов.

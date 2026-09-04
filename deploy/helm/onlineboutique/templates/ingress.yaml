@@ -1,0 +1,31 @@
+{{- if and .Values.ingress .Values.ingress.create }}
+# Единственная точка входа снаружи. Добавлено к upstream-чарту: у Google
+# витрина публикуется через Service типа LoadBalancer, нам же нужен один
+# общий Ingress, чтобы не платить за отдельный балансировщик на каждый сервис.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.frontend.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.frontend.name }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - {{- if .Values.ingress.host }}
+      host: {{ .Values.ingress.host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.frontend.name }}
+                port:
+                  number: 80
+{{- end }}

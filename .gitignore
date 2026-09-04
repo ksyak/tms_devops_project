@@ -27,3 +27,28 @@ pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
 gha-creds-*.json
+
+# --- добавлено для дипломного проекта ---
+# kubeconfig в git не хранится (требование ТЗ)
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+.kube/
+
+# ключи и секреты — штраф −20, если попадут в историю
+*.pem
+*.key
+*-key.json
+sa-key*.json
+credentials.json
+.env
+.env.*
+!.env.example
+
+# приватный ключ контроллера Sealed Secrets; сами *-sealed.yaml коммитим
+sealed-secrets-key*.yaml
+
+# Рабочие каталоги Terraform на любой глубине.
+# Паттерн upstream `.terraform/*` содержит слэш, поэтому привязан к корню
+# репозитория и вложенный infra/terraform/.terraform не ловит.
+**/.terraform/

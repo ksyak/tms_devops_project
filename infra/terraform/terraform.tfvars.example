@@ -1,0 +1,14 @@
+# Скопировать в terraform.tfvars и при необходимости поправить.
+# Сам terraform.tfvars в git не коммитится — см. .gitignore.
+
+project_id        = "project-0a6c8877-b757-4d4f-982"
+github_owner      = "ksyak"
+github_repository = "ksyak/tms_devops_project"
+
+# Значения ниже имеют разумные умолчания, переопределять не обязательно:
+# region            = "europe-central2"
+# zone              = "europe-central2-a"
+# cluster_name      = "boutique"
+# node_count        = 3
+# machine_type      = "e2-standard-2"
+# node_disk_size_gb = 50

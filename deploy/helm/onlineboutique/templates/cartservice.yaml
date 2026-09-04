@@ -212,12 +212,24 @@ metadata:
   {{- end }}
 ---
 {{- end }}
+{{- $redisPersistence := and .Values.cartDatabase.inClusterRedis.persistence .Values.cartDatabase.inClusterRedis.persistence.enabled }}
 apiVersion: apps/v1
+{{- if $redisPersistence }}
+# StatefulSet, а не Deployment: корзина должна переживать пересоздание пода.
+# В upstream здесь Deployment с emptyDir, и данные теряются при каждом
+# рестарте. Переключается через cartDatabase.inClusterRedis.persistence.
+kind: StatefulSet
+{{- else }}
 kind: Deployment
+{{- end }}
 metadata:
   name: {{ .Values.cartDatabase.inClusterRedis.name }}
   namespace: {{ .Release.Namespace }}
 spec:
+  {{- if $redisPersistence }}
+  serviceName: {{ .Values.cartDatabase.inClusterRedis.name }}
+  replicas: 1
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Values.cartDatabase.inClusterRedis.name }}
@@ -276,9 +288,23 @@ spec:
           requests:
             cpu: 70m
             memory: 200Mi
+      {{- if not $redisPersistence }}
       volumes:
       - name: redis-data
         emptyDir: {}
+      {{- end }}
+  {{- if $redisPersistence }}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.cartDatabase.inClusterRedis.persistence.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.cartDatabase.inClusterRedis.persistence.size }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: Service
