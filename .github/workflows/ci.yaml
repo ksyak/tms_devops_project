@@ -64,7 +64,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          # Совпадает с go.mod сервисов.
+          go-version: '1.25'
           cache: false
 
       - name: go test
@@ -79,7 +80,8 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0'
+          # Совпадает с TargetFramework в csproj.
+          dotnet-version: '10.0.x'
 
       - name: dotnet test (cartservice)
         run: dotnet test src/cartservice/tests --verbosity minimal
