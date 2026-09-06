@@ -5,7 +5,7 @@ images:
   # До первой сборки — публичные образы upstream, дальше Artifact Registry.
   repository: europe-central2-docker.pkg.dev/project-0a6c8877-b757-4d4f-982/boutique
   # Тег всегда явный, без :latest.
-  tag: "f5d2a70d83af3d667052a74dbface6f99fb107b5"
+  tag: "b90647e601f16ad17db0dc6f924e096289bc1ac1"
 # По одной политике на сервис. Применяются Dataplane V2.
 networkPolicies:
   create: true
