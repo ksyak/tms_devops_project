@@ -65,12 +65,15 @@ spec:
           ingress:
             enabled: false
           defaultDashboardsTimezone: browser
+          # 256Mi не хватает: при старте Grafana загружает плагины и два
+          # десятка провижененных дашбордов и падает с OOMKilled, а в UI это
+          # выглядит как "Prometheus plugin failed" и пустые панели.
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
-            limits:
               memory: 256Mi
+            limits:
+              memory: 768Mi
           sidecar:
             dashboards:
               enabled: true
