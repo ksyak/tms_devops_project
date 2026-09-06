@@ -84,6 +84,97 @@ terraform -chdir="${TF_DIR}" init -input=false -reconfigure \
   -backend-config="bucket=${STATE_BUCKET}" \
   -backend-config="prefix=terraform/state"
 
+# --- 3a. Восстановление IAM-ресурсов после предыдущего teardown -------------
+# GCP удаляет пулы Workload Identity и сервисные аккаунты "мягко": объект
+# переходит в состояние DELETED, но ID остаётся зарезервированным 30 дней.
+# Без этой обработки цикл teardown -> bootstrap падает с
+#   Error 409: Requested entity already exists
+# Логика: существует и удалён -> восстановить; существует, но нет в состоянии
+# terraform -> импортировать. Нет вовсе -> terraform создаст сам.
+
+# В root-модуле name_prefix = var.cluster_name, поэтому выводим отсюда же.
+NAME_PREFIX="${NAME_PREFIX:-${CLUSTER_NAME}}"
+WIF_POOL_ID="${WIF_POOL_ID:-${NAME_PREFIX}-gh-pool}"
+WIF_PROVIDER_ID="${WIF_PROVIDER_ID:-${NAME_PREFIX}-gh-provider}"
+CI_SA_EMAIL="${NAME_PREFIX}-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+
+ADDR_POOL='module.wif.google_iam_workload_identity_pool.github'
+ADDR_PROVIDER='module.wif.google_iam_workload_identity_pool_provider.github'
+ADDR_SA='module.wif.google_service_account.ci'
+
+tf_vars=(
+  -var "project_id=${PROJECT_ID}"
+  -var "region=${REGION}"
+  -var "zone=${ZONE}"
+  -var "cluster_name=${CLUSTER_NAME}"
+  -var "github_owner=${GITHUB_OWNER}"
+  -var "github_repository=${GITHUB_REPOSITORY}"
+)
+
+in_state() { terraform -chdir="${TF_DIR}" state show "$1" >/dev/null 2>&1; }
+
+tf_import() {
+  terraform -chdir="${TF_DIR}" import -input=false "${tf_vars[@]}" "$1" "$2" >/dev/null
+}
+
+log "Проверка IAM-ресурсов (Workload Identity Federation)"
+
+pool_state="$(gcloud iam workload-identity-pools describe "${WIF_POOL_ID}" \
+  --location=global --project="${PROJECT_ID}" \
+  --format='value(state)' 2>/dev/null || true)"
+
+if [[ -z "${pool_state}" ]]; then
+  echo "    пул ${WIF_POOL_ID}: отсутствует, создаст terraform"
+else
+  if [[ "${pool_state}" == "DELETED" ]]; then
+    warn "пул ${WIF_POOL_ID} в soft-delete — восстанавливаю"
+    gcloud iam workload-identity-pools undelete "${WIF_POOL_ID}" \
+      --location=global --project="${PROJECT_ID}" --quiet
+  fi
+
+  if in_state "${ADDR_POOL}"; then
+    echo "    пул ${WIF_POOL_ID}: уже в состоянии terraform"
+  else
+    echo "    пул ${WIF_POOL_ID}: импортирую в состояние terraform"
+    tf_import "${ADDR_POOL}" "${WIF_POOL_ID}"
+  fi
+
+  provider_state="$(gcloud iam workload-identity-pools providers describe "${WIF_PROVIDER_ID}" \
+    --workload-identity-pool="${WIF_POOL_ID}" --location=global \
+    --project="${PROJECT_ID}" --format='value(state)' 2>/dev/null || true)"
+
+  if [[ -z "${provider_state}" ]]; then
+    echo "    провайдер ${WIF_PROVIDER_ID}: отсутствует, создаст terraform"
+  else
+    if [[ "${provider_state}" == "DELETED" ]]; then
+      warn "провайдер ${WIF_PROVIDER_ID} в soft-delete — восстанавливаю"
+      gcloud iam workload-identity-pools providers undelete "${WIF_PROVIDER_ID}" \
+        --workload-identity-pool="${WIF_POOL_ID}" --location=global \
+        --project="${PROJECT_ID}" --quiet
+    fi
+
+    if in_state "${ADDR_PROVIDER}"; then
+      echo "    провайдер ${WIF_PROVIDER_ID}: уже в состоянии terraform"
+    else
+      echo "    провайдер ${WIF_PROVIDER_ID}: импортирую в состояние terraform"
+      tf_import "${ADDR_PROVIDER}" "${WIF_POOL_ID}/${WIF_PROVIDER_ID}"
+    fi
+  fi
+fi
+
+# Сервисный аккаунт тоже переживает destroy и даёт 409 при повторном создании.
+if gcloud iam service-accounts describe "${CI_SA_EMAIL}" \
+     --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  if in_state "${ADDR_SA}"; then
+    echo "    сервисный аккаунт ${CI_SA_EMAIL}: уже в состоянии terraform"
+  else
+    echo "    сервисный аккаунт ${CI_SA_EMAIL}: импортирую в состояние terraform"
+    tf_import "${ADDR_SA}" "projects/${PROJECT_ID}/serviceAccounts/${CI_SA_EMAIL}"
+  fi
+else
+  echo "    сервисный аккаунт ${CI_SA_EMAIL}: отсутствует, создаст terraform"
+fi
+
 log "Terraform apply"
 
 terraform -chdir="${TF_DIR}" apply -input=false -auto-approve \
