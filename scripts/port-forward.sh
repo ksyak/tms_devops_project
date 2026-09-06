@@ -53,14 +53,18 @@ stop_all() {
     echo "    проброски не запускались"
     return 0
   fi
-  local f pid
+  local f pid port
   for f in "${RUN_DIR}"/*.pid; do
     [[ -e "${f}" ]] || continue
+    port="$(basename "${f}" .pid)"
     pid="$(cat "${f}" 2>/dev/null || true)"
+    # Сначала надзорный цикл, иначе он поднимет туннель обратно.
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
       kill "${pid}" 2>/dev/null || true
-      echo "    остановлен $(basename "${f}" .pid) (pid ${pid})"
     fi
+    # Затем сам kubectl: он дочерний процесс и не умирает вместе с циклом.
+    pkill -f "port-forward.*${port}:" 2>/dev/null || true
+    echo "    остановлен туннель на порт ${port}"
     rm -f "${f}"
   done
 }
@@ -116,22 +120,31 @@ start_all() {
       continue
     fi
 
-    kubectl port-forward -n "${ns}" "${svc}" "${local_port}:${remote_port}" \
-      >"${RUN_DIR}/${local_port}.log" 2>&1 &
+    # kubectl port-forward привязан к конкретному поду и умирает вместе с ним:
+    # при перезапуске пода, вытеснении spot-ноды или обновлении Deployment
+    # туннель молча пропадает. Поэтому запускаем его под надзором — цикл
+    # поднимает проброску заново, пока его самого не остановят.
+    (
+      while true; do
+        kubectl port-forward -n "${ns}" "${svc}" "${local_port}:${remote_port}" \
+          >>"${RUN_DIR}/${local_port}.log" 2>&1
+        echo "--- туннель разорван, поднимаю заново $(date +%T)" \
+          >>"${RUN_DIR}/${local_port}.log"
+        sleep 3
+      done
+    ) &
     echo $! > "${RUN_DIR}/${local_port}.pid"
     echo "    ${name}: ${scheme}://localhost:${local_port}"
   done
 
-  # kubectl port-forward падает не сразу — даём ему время и проверяем.
-  sleep 2
-  local f
-  for f in "${RUN_DIR}"/*.pid; do
-    [[ -e "${f}" ]] || continue
-    pid="$(cat "${f}")"
-    if ! kill -0 "${pid}" 2>/dev/null; then
-      warn "проброска на порт $(basename "${f}" .pid) упала, лог: ${f%.pid}.log"
-      rm -f "${f}"
-    fi
+  # Проверяем, что порт действительно начал слушаться.
+  sleep 3
+  local entry_check name_c ns_c svc_c port_c
+  for entry_check in "${FORWARDS[@]}"; do
+    IFS='|' read -r name_c ns_c svc_c port_c _ _ <<< "${entry_check}"
+    [[ -f "${RUN_DIR}/${port_c}.pid" ]] || continue
+    port_busy "${port_c}" \
+      || warn "${name_c}: порт ${port_c} не слушается, смотрите ${RUN_DIR}/${port_c}.log"
   done
 }
 
