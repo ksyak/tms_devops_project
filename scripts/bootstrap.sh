@@ -15,6 +15,28 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="${REPO_ROOT}/infra/terraform"
 
+# --- 0. Локальные настройки из .env -----------------------------------------
+# Файл лежит вне git (.gitignore), образец — .env.example. Держит внешние
+# секреты и параметры стенда, чтобы не передавать их в командной строке.
+# Переменные, заданные явно при запуске, приоритетнее файла.
+
+ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  while IFS='=' read -r key value; do
+    key="${key//[[:space:]]/}"
+    [[ -z "${key}" || "${key}" == \#* ]] && continue
+    # Windows-переносы строк ломают значение молча.
+    value="${value%$'\r'}"
+    # Снимаем кавычки, если значение обёрнуто.
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    # Явно переданное в командной строке не перетираем.
+    [[ -n "${!key:-}" ]] && continue
+    export "${key}=${value}"
+  done < "${ENV_FILE}"
+fi
+
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}"
 REGION="${REGION:-europe-central2}"
 ZONE="${ZONE:-europe-central2-a}"
@@ -39,9 +61,20 @@ die()  { printf '\033[1;31mX   %s\033[0m\n' "$*" >&2; exit 1; }
 
 log "Preflight"
 
-for tool in gcloud terraform kubectl helm; do
+for tool in gcloud terraform kubectl helm envsubst openssl; do
   command -v "$tool" >/dev/null 2>&1 || die "не найден $tool — см. docs/prerequisites"
 done
+
+# Токен бота — единственный секрет, который нельзя ни сгенерировать, ни взять
+# из облака: он внешний. Проверяем до создания ресурсов, а не на 20-й минуте.
+if [[ -z "${TELEGRAM_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
+  if ! kubectl get secret alertmanager-boutique -n monitoring >/dev/null 2>&1; then
+    die "не заданы TELEGRAM_TOKEN и TELEGRAM_CHAT_ID.
+    Уведомления — требование задания, без них Alertmanager не поднимется.
+    Запуск:
+      PROJECT_ID=<проект> TELEGRAM_TOKEN=<токен> TELEGRAM_CHAT_ID=<id> ./scripts/bootstrap.sh"
+  fi
+fi
 
 [[ -n "${PROJECT_ID}" ]] || die "не задан PROJECT_ID и не выставлен проект в gcloud"
 
@@ -117,6 +150,32 @@ tf_import() {
   terraform -chdir="${TF_DIR}" import -input=false "${tf_vars[@]}" "$1" "$2" >/dev/null
 }
 
+# undelete в GCP асинхронный: команда возвращает handle операции, а объект
+# становится доступен через несколько секунд. Без ожидания import падает с
+# "Cannot import non-existent remote object".
+pool_state_now() {
+  gcloud iam workload-identity-pools describe "${WIF_POOL_ID}" \
+    --location=global --project="${PROJECT_ID}" \
+    --format='value(state)' 2>/dev/null || true
+}
+
+provider_state_now() {
+  gcloud iam workload-identity-pools providers describe "${WIF_PROVIDER_ID}" \
+    --workload-identity-pool="${WIF_POOL_ID}" --location=global \
+    --project="${PROJECT_ID}" --format='value(state)' 2>/dev/null || true
+}
+
+wait_active() {  # $1 — функция опроса состояния, $2 — что ждём (для лога)
+  local i state
+  for i in $(seq 1 60); do
+    state="$($1)"
+    [[ "${state}" == "ACTIVE" ]] && return 0
+    sleep 5
+  done
+  warn "$2 не перешёл в ACTIVE за 5 минут (последнее состояние: ${state:-нет})"
+  return 1
+}
+
 log "Проверка IAM-ресурсов (Workload Identity Federation)"
 
 pool_state="$(gcloud iam workload-identity-pools describe "${WIF_POOL_ID}" \
@@ -129,7 +188,10 @@ else
   if [[ "${pool_state}" == "DELETED" ]]; then
     warn "пул ${WIF_POOL_ID} в soft-delete — восстанавливаю"
     gcloud iam workload-identity-pools undelete "${WIF_POOL_ID}" \
-      --location=global --project="${PROJECT_ID}" --quiet
+      --location=global --project="${PROJECT_ID}" --quiet >/dev/null
+    wait_active pool_state_now "пул ${WIF_POOL_ID}" \
+      || die "не удалось восстановить пул — запустите скрипт повторно"
+    echo "    пул ${WIF_POOL_ID}: восстановлен"
   fi
 
   if in_state "${ADDR_POOL}"; then
@@ -150,7 +212,10 @@ else
       warn "провайдер ${WIF_PROVIDER_ID} в soft-delete — восстанавливаю"
       gcloud iam workload-identity-pools providers undelete "${WIF_PROVIDER_ID}" \
         --workload-identity-pool="${WIF_POOL_ID}" --location=global \
-        --project="${PROJECT_ID}" --quiet
+        --project="${PROJECT_ID}" --quiet >/dev/null
+      wait_active provider_state_now "провайдер ${WIF_PROVIDER_ID}" \
+        || die "не удалось восстановить провайдера — запустите скрипт повторно"
+      echo "    провайдер ${WIF_PROVIDER_ID}: восстановлен"
     fi
 
     if in_state "${ADDR_PROVIDER}"; then
@@ -188,6 +253,27 @@ terraform -chdir="${TF_DIR}" apply -input=false -auto-approve \
 REGISTRY_URL="$(terraform -chdir="${TF_DIR}" output -raw registry_url)"
 WIF_PROVIDER="$(terraform -chdir="${TF_DIR}" output -raw wif_provider)"
 CI_SA="$(terraform -chdir="${TF_DIR}" output -raw ci_service_account)"
+INGRESS_IP="$(terraform -chdir="${TF_DIR}" output -raw ingress_ip)"
+
+# Домена у стенда нет, а Let's Encrypt не выдаёт сертификат на IP.
+# nip.io резолвит <адрес>.nip.io в сам адрес — получаем валидное имя.
+# Адрес зарезервирован в terraform, поэтому известен ДО установки Ingress
+# и все манифесты рендерятся сразу, без второго прохода.
+export INGRESS_HOST="${INGRESS_IP}.nip.io"
+printf '    ingress: %s\n' "${INGRESS_HOST}"
+
+# --- 3b. Рендеринг манифестов Argo CD ---------------------------------------
+# В файлах deploy/argocd лежит плейсхолдер ${INGRESS_HOST}. Подставляем
+# фактический адрес во временный каталог: сами файлы в git не трогаем,
+# иначе каждый цикл создавал бы коммит с новым IP.
+
+RENDER_DIR="$(mktemp -d)"
+trap 'rm -rf "${RENDER_DIR}"' EXIT
+
+for f in "${REPO_ROOT}"/deploy/argocd/*.yaml; do
+  # Явный список переменных: остальные ${...} в файлах остаются как есть.
+  envsubst '${INGRESS_HOST}' < "${f}" > "${RENDER_DIR}/$(basename "${f}")"
+done
 
 # --- 4. kubeconfig ----------------------------------------------------------
 # Получаем на лету, в git не хранится.
@@ -216,13 +302,86 @@ helm upgrade --install argocd argo/argo-cd \
 # Ставится до Ingress: у NGINX включён ServiceMonitor, а его CRD приносит
 # prometheus-operator. В обратном порядке установка Ingress падает.
 
+# --- 5a. Секреты кластера ---------------------------------------------------
+# Секретов нет ни в git, ни в файлах рядом с проектом: пароли генерируются при
+# первом разворачивании, токен бота приходит из переменной окружения. Поэтому
+# стенд поднимается в любом чистом проекте одной командой.
+#
+# Идемпотентность: существующие секреты не перезаписываются, иначе пароли
+# менялись бы при каждом запуске.
+
+log "Секреты кластера"
+
+kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+ensure_secret() {  # $1 — имя, дальше аргументы для kubectl create secret generic
+  local name="$1"; shift
+  if kubectl get secret "${name}" -n monitoring >/dev/null 2>&1; then
+    echo "    ${name}: уже существует"
+    return 0
+  fi
+  kubectl create secret generic "${name}" -n monitoring "$@" >/dev/null
+  echo "    ${name}: создан"
+}
+
+# Пароль Grafana. Генерируем, если не задан снаружи.
+GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)}"
+ensure_secret grafana-admin \
+  --from-literal=admin-user=admin \
+  --from-literal=admin-password="${GRAFANA_PASSWORD}"
+
+# Конфиг Alertmanager с токеном бота.
+if [[ -n "${TELEGRAM_TOKEN:-}" && -n "${TELEGRAM_CHAT_ID:-}" ]]; then
+  AM_CONFIG="$(mktemp)"
+  TELEGRAM_TOKEN="${TELEGRAM_TOKEN}" TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}" \
+    envsubst '${TELEGRAM_TOKEN} ${TELEGRAM_CHAT_ID}' \
+    < "${REPO_ROOT}/deploy/secrets/alertmanager.tmpl.yaml" > "${AM_CONFIG}"
+
+  # Этот секрет обновляем всегда: токен мог смениться, а генерации здесь нет.
+  kubectl create secret generic alertmanager-boutique -n monitoring \
+    --from-file=alertmanager.yaml="${AM_CONFIG}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  rm -f "${AM_CONFIG}"
+  echo "    alertmanager-boutique: настроен"
+elif kubectl get secret alertmanager-boutique -n monitoring >/dev/null 2>&1; then
+  echo "    alertmanager-boutique: оставлен прежним (TELEGRAM_* не заданы)"
+else
+  die "не заданы TELEGRAM_TOKEN и TELEGRAM_CHAT_ID — Alertmanager не поднимется.
+    Запустите так:
+      PROJECT_ID=${PROJECT_ID} TELEGRAM_TOKEN=<токен> TELEGRAM_CHAT_ID=<id> ./scripts/bootstrap.sh"
+fi
+
 log "Стек мониторинга"
 
-kubectl apply -f "${REPO_ROOT}/deploy/argocd/monitoring.yaml"
+kubectl apply -f "${RENDER_DIR}/monitoring.yaml"
 
-kubectl wait --for=condition=established --timeout=10m \
+# Argo создаёт CRD не мгновенно: сначала он клонирует чарт и начинает sync.
+# kubectl wait не умеет ждать ПОЯВЛЕНИЯ объекта — при отсутствии CRD он сразу
+# падает с NotFound. Поэтому сначала ждём появления в цикле.
+echo "    жду появления CRD ServiceMonitor (Argo синхронизирует чарт)"
+
+crd_ready=false
+for _ in $(seq 1 120); do   # до 10 минут
+  if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+    crd_ready=true
+    break
+  fi
+  sleep 5
+done
+
+if [[ "${crd_ready}" != true ]]; then
+  warn "состояние Application monitoring:"
+  kubectl -n argocd get application monitoring \
+    -o jsonpath='{.status.sync.status} / {.status.health.status}{"\n"}{.status.conditions}{"\n"}' 2>/dev/null || true
+  die "CRD ServiceMonitor не появился за 10 минут — проверьте: argocd app get monitoring"
+fi
+
+# Появился — теперь ждём, пока API-сервер его зарегистрирует.
+kubectl wait --for=condition=established --timeout=5m \
   crd/servicemonitors.monitoring.coreos.com \
-  || die "CRD ServiceMonitor не появился — проверьте argocd app get monitoring"
+  || die "CRD ServiceMonitor не перешёл в Established"
+
+echo "    CRD ServiceMonitor готов"
 
 # --- 7. NGINX Ingress -------------------------------------------------------
 
@@ -231,20 +390,51 @@ log "NGINX Ingress Controller"
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx >/dev/null 2>&1 || true
 helm repo update >/dev/null
 
-helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  --version "${INGRESS_NGINX_VERSION}" \
-  --namespace ingress-nginx --create-namespace \
-  --set controller.metrics.enabled=true \
-  --set controller.metrics.serviceMonitor.enabled=true \
-  --set controller.metrics.serviceMonitor.additionalLabels.release=monitoring \
-  --wait --timeout 10m
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx   --version "${INGRESS_NGINX_VERSION}"   --namespace ingress-nginx --create-namespace   --set controller.service.loadBalancerIP="${INGRESS_IP}"   --set controller.metrics.enabled=true   --set controller.metrics.serviceMonitor.enabled=true   --set controller.metrics.serviceMonitor.additionalLabels.release=monitoring   --wait --timeout 10m
 
 # --- 8. Регистрация остальных Application ----------------------------------
 # Дальше кластер приводит к состоянию из Git только Argo CD.
 
 log "Регистрация Argo CD Application"
 
-kubectl apply -n argocd -f "${REPO_ROOT}/deploy/argocd/"
+kubectl apply -n argocd -f "${RENDER_DIR}/" >/dev/null
+
+# --- 8a. Параметры Application, зависящие от окружения ----------------------
+# Значения, которые нельзя зафиксировать в git: адрес меняется при каждом
+# разворачивании, наличие образов зависит от того, отработал ли уже CI.
+# Параметры Application перекрывают value-файлы из репозитория.
+
+params=()
+add_param() { params+=("{\"name\":\"$1\",\"value\":\"$2\"}"); }
+apply_params() {  # $1 — имя Application
+  local joined; joined="$(IFS=,; echo "${params[*]}")"
+  kubectl patch application "$1" -n argocd --type=merge \
+    -p "{\"spec\":{\"source\":{\"helm\":{\"parameters\":[${joined}]}}}}" >/dev/null
+}
+
+log "Параметры Application"
+
+# --- приложение ---
+params=()
+add_param ingress.host "${INGRESS_HOST}"
+
+# Teardown удаляет Artifact Registry вместе с образами. При разворачивании с
+# нуля тег из values-prod.yaml указывает на несуществующий образ и все поды
+# встают в ImagePullBackOff. Чтобы одна команда давала рабочий стенд без
+# ожидания CI, при пустом реестре берём публичные образы upstream. После
+# первой успешной сборки CD пропишет свой тег, и Argo переключится сам.
+if [[ -z "$(gcloud artifacts docker images list "${REGISTRY_URL}" \
+             --limit=1 --format='value(package)' 2>/dev/null)" ]]; then
+  warn "Artifact Registry пуст — поднимаемся на публичных образах upstream"
+  warn "после первой успешной сборки CI/CD переключит стенд на ваши образы"
+  add_param images.repository "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo"
+  add_param images.tag ""
+else
+  echo "    в реестре есть образы — используются они"
+fi
+apply_params boutique
+echo "    boutique: параметры применены"
+
 
 log "Ожидание синхронизации (может занять несколько минут)"
 
@@ -256,23 +446,46 @@ kubectl wait --for=jsonpath='{.status.health.status}'=Healthy \
 
 log "Готово"
 
-APP_IP="$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
-  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-
 ARGO_PW="$(kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo '<уже сменён>')"
 
+GRAFANA_PW="$(kubectl get secret grafana-admin -n monitoring \
+  -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d || echo '<см. секрет>')"
+
+APP_IP="$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+
+# Балансировщик должен получить зарезервированный адрес. Расхождение значит,
+# что GKE выдал случайный IP и имена nip.io указывают не туда.
+if [[ -n "${APP_IP}" && "${APP_IP}" != "${INGRESS_IP}" ]]; then
+  warn "IP балансировщика (${APP_IP}) не совпал с зарезервированным (${INGRESS_IP})"
+  warn "сертификаты и Ingress-хосты работать не будут — проверьте квоту на адреса"
+fi
+
+# Служебные интерфейсы наружу не публикуются — поднимаем туннели.
+"${REPO_ROOT}/scripts/port-forward.sh" start
+
 cat <<EOF
 
-  Приложение:   http://${APP_IP:-<LB ещё не получил IP>}/
+  ПУБЛИЧНО (через Ingress):
 
-  Argo CD:      kubectl port-forward svc/argocd-server -n argocd 8080:443
-                https://localhost:8080  (admin / ${ARGO_PW})
+  Приложение:   https://${INGRESS_HOST}/
 
-  Grafana:      kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
-                http://localhost:3000   (admin / prom-operator)
+  ЛОКАЛЬНО (только через port-forward, наружу не смотрит):
+
+  Argo CD:      http://localhost:8081   (admin / ${ARGO_PW})
+  Grafana:      http://localhost:3000   (admin / ${GRAFANA_PW})
+  Prometheus:   http://localhost:9090
+  Alertmanager: http://localhost:9093
+
+  Управление туннелями:
+    ./scripts/port-forward.sh status
+    ./scripts/port-forward.sh stop
 
   Registry:     ${REGISTRY_URL}
+EOF
+
+cat <<EOF
 
   Для секретов GitHub Actions:
     GCP_WIF_PROVIDER   ${WIF_PROVIDER}

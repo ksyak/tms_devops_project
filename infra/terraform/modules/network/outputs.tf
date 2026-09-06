@@ -1,3 +1,8 @@
+output "ingress_ip" {
+  description = "Зарезервированный внешний IP для NGINX Ingress"
+  value       = google_compute_address.ingress.address
+}
+
 output "network_id" {
   description = "ID VPC"
   value       = google_compute_network.vpc.id

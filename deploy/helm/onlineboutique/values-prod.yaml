@@ -31,7 +31,10 @@ ingress:
   className: nginx
   # nip.io резолвит <адрес>.nip.io в сам адрес. Домена у стенда нет, а
   # Let's Encrypt требует имя: сертификат на IP не выдаётся.
-  host: "34.118.124.170.nip.io"
+  # ЗНАЧЕНИЕ ПЕРЕОПРЕДЕЛЯЕТСЯ: bootstrap.sh подставляет актуальный адрес
+  # в spec.source.helm.parameters у Application (см. deploy/argocd/application.yaml).
+  # Здесь оставлена заглушка на случай ручного helm install.
+  host: "localhost"
   tls:
     enabled: true
     issuer: letsencrypt

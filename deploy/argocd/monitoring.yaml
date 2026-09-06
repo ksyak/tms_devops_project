@@ -18,24 +18,12 @@ spec:
       releaseName: monitoring
       values: |
         prometheus:
-          # Собственной аутентификации нет — закрыт basic auth.
+          # Наружу не публикуется. У Prometheus нет своей аутентификации, а
+          # публичный Ingress пришлось бы закрывать basic auth и сертификатом.
+          # Доступ через ./scripts/port-forward.sh — туннель виден только
+          # владельцу kubeconfig, лишних сущностей и трат нет.
           ingress:
-            enabled: true
-            ingressClassName: nginx
-            annotations:
-              cert-manager.io/cluster-issuer: letsencrypt
-              nginx.ingress.kubernetes.io/auth-type: basic
-              nginx.ingress.kubernetes.io/auth-secret: monitoring-basic-auth
-              nginx.ingress.kubernetes.io/auth-realm: "Prometheus"
-            hosts:
-              - prometheus.34.118.124.170.nip.io
-            paths:
-              - /
-            pathType: Prefix
-            tls:
-              - secretName: prometheus-tls
-                hosts:
-                  - prometheus.34.118.124.170.nip.io
+            enabled: false
           prometheusSpec:
             # Иначе подхватываются только объекты этого же релиза.
             serviceMonitorSelectorNilUsesHelmValues: false
@@ -51,28 +39,13 @@ spec:
                 memory: 2Gi
 
         alertmanager:
-          # У Alertmanager нет собственной аутентификации, поэтому доступ
-          # закрыт basic auth на уровне Ingress.
+          # Наружу не публикуется: своей аутентификации нет, а веб-интерфейс
+          # позволяет заглушать алерты. Доступ через port-forward.
           ingress:
-            enabled: true
-            ingressClassName: nginx
-            annotations:
-              cert-manager.io/cluster-issuer: letsencrypt
-              nginx.ingress.kubernetes.io/auth-type: basic
-              nginx.ingress.kubernetes.io/auth-secret: monitoring-basic-auth
-              nginx.ingress.kubernetes.io/auth-realm: "Alertmanager"
-            hosts:
-              - alertmanager.34.118.124.170.nip.io
-            paths:
-              - /
-            pathType: Prefix
-            tls:
-              - secretName: alertmanager-tls
-                hosts:
-                  - alertmanager.34.118.124.170.nip.io
+            enabled: false
           alertmanagerSpec:
-            # Конфиг лежит в SealedSecret: он содержит токен бота,
-            # inline в values его держать нельзя.
+            # Конфиг создаёт bootstrap.sh из шаблона deploy/secrets: он содержит
+            # токен бота, inline в values его держать нельзя.
             useExistingSecret: true
             configSecret: alertmanager-boutique
             resources:
@@ -83,25 +56,14 @@ spec:
                 memory: 128Mi
 
         grafana:
-          # Пароль из SealedSecret вместо дефолтного prom-operator.
+          # Пароль из секрета, созданного bootstrap.sh, вместо дефолтного prom-operator.
           admin:
             existingSecret: grafana-admin
             userKey: admin-user
             passwordKey: admin-password
-          # У Grafana есть своя форма входа, второй слой не нужен.
+          # Наружу не публикуется, доступ через port-forward.
           ingress:
-            enabled: true
-            ingressClassName: nginx
-            annotations:
-              cert-manager.io/cluster-issuer: letsencrypt
-            hosts:
-              - grafana.34.118.124.170.nip.io
-            path: /
-            pathType: Prefix
-            tls:
-              - secretName: grafana-tls
-                hosts:
-                  - grafana.34.118.124.170.nip.io
+            enabled: false
           defaultDashboardsTimezone: browser
           resources:
             requests:

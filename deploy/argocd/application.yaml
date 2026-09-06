@@ -18,6 +18,12 @@ spec:
       valueFiles:
         - values.yaml
         - values-prod.yaml
+      # Имя хоста зависит от внешнего IP, который каждый цикл teardown ->
+      # bootstrap выдаётся заново. Держать его в values-prod.yaml нельзя:
+      # значение устареет. Подставляется скриптом из terraform output.
+      parameters:
+        - name: ingress.host
+          value: ${INGRESS_HOST}
 
   destination:
     server: https://kubernetes.default.svc

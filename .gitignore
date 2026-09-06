@@ -43,6 +43,8 @@ sa-key*.json
 credentials.json
 .env
 .env.*
+# Шаблон без значений — он и показывает, какие переменные нужны.
+!.env.example
 !.env.example
 
 # приватный ключ контроллера Sealed Secrets; сами *-sealed.yaml коммитим
@@ -52,3 +54,6 @@ sealed-secrets-key*.yaml
 # Паттерн upstream `.terraform/*` содержит слэш, поэтому привязан к корню
 # репозитория и вложенный infra/terraform/.terraform не ловит.
 **/.terraform/
+
+# PID-файлы и логи проброски портов
+.port-forward/

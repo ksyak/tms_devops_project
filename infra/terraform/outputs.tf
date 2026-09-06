@@ -13,6 +13,11 @@ output "kubeconfig_command" {
   value       = "gcloud container clusters get-credentials ${module.gke.cluster_name} --zone ${var.zone} --project ${var.project_id}"
 }
 
+output "ingress_ip" {
+  description = "Внешний IP Ingress — из него строится имя хоста <ip>.nip.io"
+  value       = module.network.ingress_ip
+}
+
 output "registry_url" {
   description = "Базовый URL Artifact Registry для тегов образов"
   value       = module.registry.repository_url

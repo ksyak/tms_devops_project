@@ -1,3 +1,13 @@
+# Внешний адрес для NGINX Ingress резервируем заранее, а не отдаём на откуп
+# балансировщику. Иначе имя хоста (<адрес>.nip.io) неизвестно до установки
+# Ingress, и манифесты с этим именем нечем отрендерить.
+resource "google_compute_address" "ingress" {
+  name         = "${var.name_prefix}-ingress-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+  description  = "Внешний IP NGINX Ingress Controller"
+}
+
 resource "google_compute_network" "vpc" {
   name                    = "${var.name_prefix}-vpc"
   auto_create_subnetworks = false
