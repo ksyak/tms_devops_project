@@ -14,30 +14,17 @@
 | `infra/terraform/` | VPC, GKE, Artifact Registry, Workload Identity Federation |
 | `deploy/helm/onlineboutique/` | Helm chart приложения |
 | `deploy/argocd/` | Application для Argo CD |
-| `deploy/monitoring/` | Правила алертинга, конфигурация Alertmanager |
-| `scripts/` | `bootstrap.sh`, `teardown.sh` |
+| `deploy/monitoring/` | Правила алертинга, дашборд, проба blackbox |
+| `deploy/secrets/` | Шаблоны секретов без значений |
+| `scripts/` | `bootstrap.sh`, `teardown.sh`, `port-forward.sh` |
 | `docs/` | `architecture.md`, `runbook.md` |
 | `.github/workflows/` | `ci.yaml`, `cd.yaml` |
 
 ## Требования
 
 `gcloud`, `terraform`, `kubectl` с `gke-gcloud-auth-plugin`, `helm`,
-`docker`, `kubeseal`. Проект GCP с привязанным биллингом.
-
-## Локальный запуск
-
-```bash
-docker compose up -d
-curl -f http://localhost:8080/_healthz
-```
-
-Витрина на `http://localhost:8080`. По умолчанию используются
-опубликованные образы; чтобы запустить собранные пайплайном, задайте
-переменные:
-
-```bash
-REGISTRY=europe-central2-docker.pkg.dev/<проект>/boutique TAG=<sha> docker compose up -d
-```
+`docker`, `envsubst`, `openssl`. Желательно `gh` — без него после полного
+удаления некому пересобрать образы. Проект GCP с привязанным биллингом.
 
 ## Развёртывание
 
@@ -98,30 +85,44 @@ git revert <коммит> && git push
 
 ## Доступ к интерфейсам
 
-Витрина и мониторинг опубликованы через Ingress с сертификатами
+Наружу опубликовано только приложение — через Ingress с сертификатом
 Let's Encrypt:
 
 | Что | Адрес |
 |---|---|
 | Витрина | `https://<адрес>.nip.io` |
-| Grafana | `https://grafana.<адрес>.nip.io` |
-| Prometheus | `https://prometheus.<адрес>.nip.io` |
-| Alertmanager | `https://alertmanager.<адрес>.nip.io` |
 
-Prometheus и Alertmanager не имеют собственной аутентификации, поэтому
-закрыты basic auth на уровне Ingress. Пароли хранятся в SealedSecret.
-
-Argo CD наружу не публикуется:
+Служебные интерфейсы публичного адреса не имеют. У Prometheus и
+Alertmanager нет собственной аутентификации, а веб-интерфейс Alertmanager
+позволяет заглушать алерты, поэтому доступ к ним идёт через туннель,
+видимый только владельцу kubeconfig:
 
 ```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+./scripts/port-forward.sh start
 ```
 
-Пароль Argo CD:
+| Что | Адрес |
+|---|---|
+| Argo CD | `http://localhost:8081` |
+| Grafana | `http://localhost:3000` |
+| Prometheus | `http://localhost:9090` |
+| Alertmanager | `http://localhost:9093` |
+
+Туннели поднимаются автоматически в конце `bootstrap.sh`. Управление —
+`./scripts/port-forward.sh status` и `stop`.
+
+Пароли:
 
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 ```
+
+```bash
+kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
+```
+
+Пароль Grafana генерируется при первом развёртывании и печатается в конце
+работы `bootstrap.sh`.
 
 ## Удаление
 
@@ -140,5 +141,8 @@ Terraform их нет, и при обратном порядке в проект
 В репозитории секретов нет. Пайплайны обращаются к GCP через Workload
 Identity Federation, ключи сервисных аккаунтов не создаются. Kubeconfig
 получается через `gcloud container clusters get-credentials` и не хранится
-в git. Конфигурация Alertmanager содержит токен бота и хранится как
-SealedSecret — расшифровать её может только контроллер в кластере.
+в git. Секреты кластера создаёт `bootstrap.sh`: пароли генерируются при первом
+развёртывании и не перезаписываются при повторных, конфигурация
+Alertmanager собирается из шаблона `deploy/secrets/alertmanager.tmpl.yaml`
+с подстановкой токена бота из `.env`. Файл `.env` в git не попадает,
+образец — `.env.example`.

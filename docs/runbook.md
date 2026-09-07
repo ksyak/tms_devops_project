@@ -7,33 +7,45 @@ gcloud container clusters get-credentials boutique \
   --zone europe-central2-a --project <проект>
 ```
 
-Витрина и мониторинг опубликованы через Ingress с сертификатами
-Let's Encrypt. Имена построены на nip.io, который резолвит
-`<что-угодно>.<адрес>.nip.io` в сам адрес.
+Наружу опубликовано только приложение — через Ingress с сертификатом
+Let's Encrypt. Имя построено на nip.io, который резолвит
+`<адрес>.nip.io` в сам адрес.
 
 | Что | Адрес | Доступ |
 |---|---|---|
 | Витрина | `https://<адрес>.nip.io` | открыто |
-| Grafana | `https://grafana.<адрес>.nip.io` | форма входа Grafana |
-| Prometheus | `https://prometheus.<адрес>.nip.io` | basic auth |
-| Alertmanager | `https://alertmanager.<адрес>.nip.io` | basic auth |
-| Argo CD | `kubectl port-forward svc/argocd-server -n argocd 8080:443` | наружу не публикуется |
 
-Учётные данные хранятся в SealedSecret: `grafana-admin` и
-`monitoring-basic-auth` в namespace `monitoring`.
-
-**Адрес зашит в имена хостов.** После полного пересоздания стенда
-балансировщик получает новый IP, и имена в `values-prod.yaml` и в values
-приложения `monitoring` нужно обновить, иначе Ingress перестанет
-совпадать с DNS.
-
-Доступ без публикации, если Ingress недоступен:
+Служебные интерфейсы публичного адреса не имеют: у Prometheus и
+Alertmanager нет собственной аутентификации, а веб-интерфейс Alertmanager
+позволяет заглушать алерты. Доступ — через туннель, видимый только
+владельцу kubeconfig:
 
 ```bash
-kubectl port-forward svc/monitoring-grafana -n monitoring 3000:80
-kubectl port-forward svc/monitoring-kube-prometheus-prometheus -n monitoring 9090:9090
-kubectl port-forward svc/monitoring-kube-prometheus-alertmanager -n monitoring 9093:9093
+./scripts/port-forward.sh start
 ```
+
+| Что | Адрес |
+|---|---|
+| Argo CD | `http://localhost:8081` |
+| Grafana | `http://localhost:3000` |
+| Prometheus | `http://localhost:9090` |
+| Alertmanager | `http://localhost:9093` |
+
+Туннели поднимаются автоматически в конце `bootstrap.sh`. Состояние и
+остановка — `./scripts/port-forward.sh status` и `stop`. Скрипт ждёт
+готовности подов и переподнимает туннель, если тот оборвался: проброска
+привязана к конкретному поду и умирает вместе с ним.
+
+Пароль Grafana генерируется при первом развёртывании:
+
+```bash
+kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
+```
+
+**Адрес балансировщика резервируется в Terraform** и известен до установки
+Ingress, поэтому имена хостов рендерятся автоматически. В манифестах лежит
+плейсхолдер `${INGRESS_HOST}`, который подставляет `bootstrap.sh` — руками
+после пересоздания стенда править ничего не нужно.
 
 Пароль Argo CD:
 
