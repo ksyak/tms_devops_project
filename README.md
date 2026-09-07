@@ -4,21 +4,78 @@
 Инфраструктура описана Terraform, упаковка — Helm, доставка — Argo CD,
 мониторинг — Prometheus и Grafana, уведомления — Telegram.
 
-Копия `GoogleCloudPlatform/microservices-demo`.
+Форк `GoogleCloudPlatform/microservices-demo`: приложение и его Helm chart
+взяты оттуда, всё остальное написано с нуля.
+
+## Архитектура
+
+```mermaid
+flowchart TB
+  Dev["Разработчик"] -->|git push| GH["GitHub"]
+  GH --> CI["CI: lint, тесты,<br/>сборка 11 образов"]
+  CI -->|тег = git sha| AR[("Artifact Registry")]
+  CI -->|только main| CD["CD: правит images.tag<br/>в values-prod.yaml"]
+  CD -->|коммит| GH
+  GH -->|Argo забирает сам| ARGO
+
+  subgraph GCP["Google Cloud · europe-central2-a"]
+    subgraph K8S["GKE · 4 × e2-standard-2"]
+      ARGO["Argo CD"]
+      NGX["NGINX Ingress"]
+      subgraph NS["namespace boutique"]
+        FE["frontend"] --> BE["9 сервисов"]
+        BE --> RD[("redis-cart<br/>StatefulSet + PVC")]
+      end
+      subgraph MON["namespace monitoring"]
+        PROM["Prometheus"] --> GRAF["Grafana"]
+        PROM --> AM["Alertmanager"]
+        BB["blackbox-exporter"] --> PROM
+      end
+    end
+    LB["Cloud LB<br/>статический IP"]
+  end
+
+  ARGO -->|sync| NS
+  ARGO -->|sync| MON
+  AR -.pull образов.-> NS
+  User["Пользователь"] --> LB --> NGX --> FE
+  BB -.проба через Ingress.-> NGX
+  NS -.метрики.-> PROM
+  AM -->|алерты| TG["Telegram"]
+  CI -->|статус| TG
+```
+
+Ключевой принцип: **пайплайны не имеют доступа к кластеру.** CI кладёт
+образ в реестр, CD правит тег в репозитории, состояние кластера приводит к
+описанному в Git только Argo CD.
+
+```mermaid
+flowchart LR
+  subgraph A["Поток артефакта"]
+    A1["git push"] --> A2["CI собирает"] --> A3[("Artifact Registry")]
+  end
+  subgraph B["Поток конфигурации"]
+    B1["CD пишет тег"] --> B2["Git"] --> B3["Argo CD"] --> B4["Кластер"]
+  end
+  A3 -.kubelet тянет образ.-> B4
+```
 
 ## Содержимое
 
 | Каталог | Назначение |
 |---|---|
-| `src/` | Исходники микросервисов |
-| `infra/terraform/` | VPC, GKE, Artifact Registry, Workload Identity Federation |
+| `src/`, `protos/` | Исходники микросервисов и gRPC-контракты (из upstream) |
+| `infra/terraform/` | VPC, GKE, Artifact Registry, Workload Identity Federation, статический IP |
 | `deploy/helm/onlineboutique/` | Helm chart приложения |
 | `deploy/argocd/` | Application для Argo CD |
-| `deploy/monitoring/` | Правила алертинга, дашборд, проба blackbox |
+| `deploy/monitoring/` | Правила алертинга, дашборд Grafana, проба blackbox |
 | `deploy/secrets/` | Шаблоны секретов без значений |
+| `deploy/certs/` | ClusterIssuer Let's Encrypt |
 | `scripts/` | `bootstrap.sh`, `teardown.sh`, `port-forward.sh` |
 | `docs/` | `architecture.md`, `runbook.md` |
 | `.github/workflows/` | `ci.yaml`, `cd.yaml` |
+| `docker-compose.yml` | Локальный запуск без Kubernetes |
+| `.env.example` | Образец локальных настроек |
 
 ## Требования
 
@@ -28,23 +85,45 @@
 
 ## Развёртывание
 
-Аутентификация выполняется вручную, автоматизировать её нельзя:
+Аутентификация выполняется вручную — автоматизировать её нельзя, она
+подтверждает личность человека:
 
 ```bash
 gcloud auth login && gcloud auth application-default login
 gcloud billing projects link <проект> --billing-account=<ID>
 ```
 
+Настройки стенда — в `.env` (в git не попадает):
+
+```bash
+cp .env.example .env
+```
+
+Обязательны `PROJECT_ID`, `TELEGRAM_TOKEN` и `TELEGRAM_CHAT_ID`. Токен
+получают у `@BotFather`, идентификатор чата — через
+`https://api.telegram.org/bot<ТОКЕН>/getUpdates` после первого сообщения
+боту. Без них скрипт останавливается на проверках, не создавая ресурсов:
+Alertmanager не поднимется без конфигурации, а уведомления — часть
+требований к системе.
+
 Дальше одной командой:
 
 ```bash
-PROJECT_ID=<проект> ./scripts/bootstrap.sh
+./scripts/bootstrap.sh
 ```
 
 Скрипт выполняет проверки окружения, создаёт бакет под состояние Terraform,
-применяет Terraform, получает kubeconfig, разворачивает Argo CD, стек
-мониторинга и NGINX Ingress, регистрирует Application, дожидается готовности
-и печатает адреса. Повторный запуск идемпотентен.
+восстанавливает объекты IAM после предыдущего удаления, применяет Terraform,
+получает kubeconfig, создаёт секреты кластера, разворачивает Argo CD, стек
+мониторинга и NGINX Ingress, регистрирует Application, поднимает проброску
+портов и печатает адреса.
+
+Если Artifact Registry пуст — так бывает после полного удаления, потому что
+образы живут вместе с реестром, — скрипт запускает сборку в CI и дожидается
+её, чтобы стенд поднялся на собственных образах, а не на публичных.
+
+Повторный запуск идемпотентен: существующие ресурсы не пересоздаются,
+сгенерированные пароли не перезаписываются.
 
 ## Сборка и доставка
 
@@ -82,6 +161,32 @@ argocd app set boutique --sync-policy automated --auto-prune --self-heal
 ```bash
 git revert <коммит> && git push
 ```
+
+## Мониторинг
+
+`kube-prometheus-stack` собирает метрики нод, объектов Kubernetes и
+контейнеров. Доступность и время ответа витрины снимаются отдельно —
+blackbox-экспортер раз в полминуты запрашивает её через Ingress Controller,
+то есть тем же путём, что и пользователь.
+
+Так сделано потому, что сервисы приложения инструментированы OpenTelemetry
+и не отдают `/metrics` в формате Prometheus, а `ingress-nginx` 1.15 больше
+не собирает подробные метрики запросов. Проба вместо этого проверяет весь
+тракт целиком: отказ любого бэкенда виден снаружи, даже когда под
+`frontend` жив.
+
+| Алерт | Условие | Выдержка |
+|---|---|---|
+| `BoutiquePodNotReady` | под не в состоянии Ready | 5 мин |
+| `BoutiqueFrontendDown` | `probe_success == 0` | 2 мин |
+| `BoutiqueHighLatency` | ответ дольше секунды | 5 мин |
+
+Выдержка у каждого правила отсекает штатные события: во время обновления
+образа часть подов законно не готова, и без неё алерты срабатывали бы на
+каждом деплое.
+
+Уведомления идут в Telegram — туда же, куда результаты сборки, поэтому вся
+история стенда собрана в одном месте.
 
 ## Доступ к интерфейсам
 
