@@ -7,6 +7,9 @@ on:
     branches: ['**']
   pull_request:
     branches: [main]
+  # Ручной запуск нужен bootstrap.sh: teardown удаляет Artifact Registry
+  # вместе с образами, и при развёртывании с нуля их некому пересобрать.
+  workflow_dispatch:
 
 # Новый пуш в ту же ветку отменяет предыдущий прогон.
 concurrency:

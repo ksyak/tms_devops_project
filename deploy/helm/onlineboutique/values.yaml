@@ -156,6 +156,10 @@ frontend:
 loadGenerator:
   create: true
   name: loadgenerator
+  # Интенсивность нагрузки. Менять здесь или в values-prod.yaml и
+  # коммитить: ручной kubectl scale откатывается selfHeal Argo CD.
+  users: 10
+  rate: 1
   checkFrontendInitContainer: true
   # Пусто = обращаться к Service frontend напрямую. Если указать адрес
   # Ingress Controller, нагрузка пойдёт тем же путём, что у пользователя,

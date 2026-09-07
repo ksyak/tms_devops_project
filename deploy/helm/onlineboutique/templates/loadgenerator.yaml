@@ -110,10 +110,12 @@ spec:
         env:
         - name: FRONTEND_ADDR
           value: {{ .Values.loadGenerator.frontendAddr | default (printf "%s:80" .Values.frontend.name) | quote }}
+        # Интенсивность нагрузки задаётся из values, чтобы менять её
+        # через Git, а не kubectl: selfHeal откатывает ручные правки.
         - name: USERS
-          value: "10"
+          value: {{ .Values.loadGenerator.users | default 10 | quote }}
         - name: RATE
-          value: "1"
+          value: {{ .Values.loadGenerator.rate | default 1 | quote }}
         resources:
           {{- toYaml .Values.loadGenerator.resources | nindent 10 }}
 {{- if .Values.networkPolicies.create }}

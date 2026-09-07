@@ -76,6 +76,11 @@ if [[ -z "${TELEGRAM_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
   fi
 fi
 
+# gh не обязателен, но без него пустой реестр после teardown нечем наполнить,
+# и стенд поднимется на публичных образах upstream вместо ваших.
+command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
+  || warn "gh не установлен или не авторизован (gh auth login) — образы после teardown не пересоберутся"
+
 [[ -n "${PROJECT_ID}" ]] || die "не задан PROJECT_ID и не выставлен проект в gcloud"
 
 gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . \
@@ -418,19 +423,75 @@ log "Параметры Application"
 params=()
 add_param ingress.host "${INGRESS_HOST}"
 
-# Teardown удаляет Artifact Registry вместе с образами. При разворачивании с
-# нуля тег из values-prod.yaml указывает на несуществующий образ и все поды
-# встают в ImagePullBackOff. Чтобы одна команда давала рабочий стенд без
-# ожидания CI, при пустом реестре берём публичные образы upstream. После
-# первой успешной сборки CD пропишет свой тег, и Argo переключится сам.
-if [[ -z "$(gcloud artifacts docker images list "${REGISTRY_URL}" \
-             --limit=1 --format='value(package)' 2>/dev/null)" ]]; then
-  warn "Artifact Registry пуст — поднимаемся на публичных образах upstream"
-  warn "после первой успешной сборки CI/CD переключит стенд на ваши образы"
+# Teardown удаляет Artifact Registry вместе с образами, поэтому при
+# развёртывании с нуля реестр пуст и тег из values-prod.yaml указывает на
+# несуществующий образ — все поды встали бы в ImagePullBackOff.
+#
+# Артефакты производит CI, а не инфраструктура, поэтому bootstrap не собирает
+# образы сам (это 11 сборок на пяти языках), а просит CI их пересобрать и
+# дожидается результата. Так стенд поднимается на СВОИХ образах без ручных
+# шагов. Если gh недоступен — откат на публичные образы upstream, чтобы
+# приложение всё равно поднялось.
+
+IMAGES_SHA=""
+
+ensure_images() {
+  if [[ -n "$(gcloud artifacts docker images list "${REGISTRY_URL}" \
+               --limit=1 --format='value(package)' 2>/dev/null)" ]]; then
+    echo "    в реестре есть образы"
+    return 0
+  fi
+
+  warn "Artifact Registry пуст: teardown удалил образы вместе с репозиторием"
+
+  command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 || {
+    warn "gh не установлен или не авторизован (gh auth login)"
+    return 1
+  }
+
+  local sha
+  sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha 2>/dev/null || true)"
+  [[ -n "${sha}" ]] || { warn "не удалось получить sha ветки main"; return 1; }
+
+  # Запоминаем последний прогон, чтобы отличить свежий от него.
+  local before after i
+  before="$(gh run list -R "${GITHUB_REPOSITORY}" --workflow=CI --limit=1 \
+            --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo 0)"
+
+  echo "    запускаю сборку в CI для ${sha:0:7}"
+  gh workflow run CI -R "${GITHUB_REPOSITORY}" --ref main >/dev/null 2>&1 \
+    || { warn "не удалось запустить workflow CI"; return 1; }
+
+  for i in $(seq 1 30); do
+    after="$(gh run list -R "${GITHUB_REPOSITORY}" --workflow=CI --limit=1 \
+             --json databaseId --jq '.[0].databaseId' 2>/dev/null || echo 0)"
+    [[ "${after}" != "${before}" ]] && break
+    sleep 5
+  done
+  [[ "${after}" != "${before}" ]] || { warn "новый прогон CI не появился"; return 1; }
+
+  echo "    жду завершения сборки (обычно 3-5 минут)"
+  gh run watch "${after}" -R "${GITHUB_REPOSITORY}" --exit-status >/dev/null 2>&1 \
+    || { warn "сборка в CI завершилась неудачей: gh run view ${after} -R ${GITHUB_REPOSITORY}"; return 1; }
+
+  IMAGES_SHA="${sha}"
+  echo "    образы собраны и опубликованы"
+  return 0
+}
+
+if ensure_images; then
+  # Тег известен только когда собирали сейчас. Иначе действует values-prod.yaml,
+  # куда его записал CD, — и переопределять ничего не нужно.
+  if [[ -n "${IMAGES_SHA}" ]]; then
+    add_param images.repository "${REGISTRY_URL}"
+    add_param images.tag "${IMAGES_SHA}"
+    echo "    образы: ${REGISTRY_URL}:${IMAGES_SHA:0:7}"
+  fi
+else
+  warn "стенд поднимется на публичных образах upstream"
+  warn "после успешной сборки CI/CD переключит его на ваши"
   add_param images.repository "us-central1-docker.pkg.dev/online-boutique-ci/microservices-demo"
   add_param images.tag ""
-else
-  echo "    в реестре есть образы — используются они"
 fi
 apply_params boutique
 echo "    boutique: параметры применены"
