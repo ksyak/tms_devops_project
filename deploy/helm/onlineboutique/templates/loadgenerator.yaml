@@ -38,7 +38,7 @@ spec:
   selector:
     matchLabels:
       app: {{ .Values.loadGenerator.name }}
-  replicas: 1
+  replicas: 5
   template:
     metadata:
       labels:
